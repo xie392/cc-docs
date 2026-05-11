@@ -1,0 +1,54 @@
+import { Cards } from "nextra/components";
+
+# Claude Code 源码学习文档
+
+基于 Claude Code CLI (v2.1.116) 泄露版源码，深入分析其架构设计、核心模块与智能体开发方法。
+
+<Cards>
+  <Cards.Card title="项目概览" href="/guide/overview">
+    了解 Claude Code 的技术栈、目录结构和整体设计
+  </Cards.Card>
+  <Cards.Card title="架构设计" href="/architecture/overview">
+    深入理解核心架构、消息流和状态管理
+  </Cards.Card>
+  <Cards.Card title="工具系统" href="/tools/overview">
+    学习 Tool 抽象层和 40+ 内置工具的实现
+  </Cards.Card>
+  <Cards.Card title="智能体开发" href="/agent-dev/overview">
+    掌握基于 Claude Code 开发自定义智能体的方法
+  </Cards.Card>
+</Cards>
+
+## 为什么学习 Claude Code 源码
+
+Claude Code 是 Anthropic 官方的 CLI 智能体，代表了当前最成熟的终端 AI Agent 实现之一。通过学习它的源码，你可以：
+
+- **理解生产级 Agent 架构**：从入口到工具调用的完整链路
+- **掌握 Tool Use 模式**：如何设计和实现 40+ 工具的抽象层
+- **学习流式交互**：Ink + React 的终端 UI 渲染方案
+- **MCP 协议实践**：如何集成 Model Context Protocol
+- **权限与安全**：Agent 的权限模型和安全边界设计
+- **多智能体协作**：Team、SubAgent、Swarm 的实现方式
+
+## 技术栈速览
+
+| 类别 | 技术 |
+|------|------|
+| 运行时 | Bun (TypeScript) |
+| 终端 UI | Ink (React for CLI) |
+| AI SDK | @anthropic-ai/sdk |
+| 协议 | MCP (Model Context Protocol) |
+| Schema | Zod v4 |
+| 构建 | Bun bundle + feature flags |
+| 状态管理 | 自定义 AppState (React hooks) |
+| Observability | OpenTelemetry |
+
+## 文档导航
+
+- **[项目概览](/guide/overview)** — 技术栈、目录结构、启动流程
+- **[核心概念](/guide/concepts)** — Tool、Query、Context、Permission 等核心概念
+- **[架构设计](/architecture/overview)** — 整体架构、消息流、状态管理
+- **[工具系统](/tools/overview)** — Tool 基类、内置工具、MCP 工具
+- **[服务层](/services/overview)** — API、MCP、LSP、OAuth 等服务
+- **[Hooks 体系](/hooks/overview)** — React Hooks 的设计模式与应用
+- **[智能体开发](/agent-dev/overview)** — 自定义 Agent、Team 协作、SDK 集成

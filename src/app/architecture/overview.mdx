@@ -1,0 +1,212 @@
+# 架构设计
+
+## 整体架构
+
+Claude Code 采用分层架构，从上到下分为：
+
+```
+┌─────────────────────────────────────────────┐
+│              用户交互层                        │
+│  CLI Entry → Ink UI (React Components)       │
+├─────────────────────────────────────────────┤
+│              对话管理层                        │
+│  QueryEngine → Query → Tool Loop             │
+├─────────────────────────────────────────────┤
+│              工具执行层                        │
+│  Tool Registry → Permission → Execute        │
+├─────────────────────────────────────────────┤
+│              服务层                           │
+│  API / MCP / LSP / OAuth / Compact           │
+├─────────────────────────────────────────────┤
+│              基础设施层                        │
+│  State / Context / Hooks / Bridge / Config   │
+└─────────────────────────────────────────────┘
+```
+
+## 消息流转
+
+一次完整的用户交互流程：
+
+```
+用户输入文本
+    │
+    ▼
+processUserInput()          ← 输入预处理
+    │  - 解析斜杠命令
+    │  - 处理 @文件引用
+    │  - 附件处理
+    ▼
+query()                     ← 核心查询函数
+    │
+    ├──→ 构建 Messages       ← context.ts
+    │    - System Prompt
+    │    - CLAUDE.md 内容
+    │    - Git 上下文
+    │    - 历史对话
+    │
+    ├──→ 调用 API            ← services/api/
+    │    - Anthropic Messages API
+    │    - 流式响应
+    │
+    ├──→ 处理响应
+    │    ├── 文本输出 → 直接渲染
+    │    └── tool_use → 进入工具循环
+    │
+    └──→ 工具循环
+         │
+         ├──→ 匹配工具 (toolMatchesName)
+         ├──→ 验证输入 (Zod Schema)
+         ├──→ 权限检查 (canUseTool)
+         ├──→ 执行工具 (tool.execute)
+         ├──→ 渲染结果 (renderToolResult)
+         ├──→ 返回 tool_result
+         └──→ 继续 API 调用（直到无 tool_use）
+```
+
+## 主循环
+
+Claude Code 的核心是一个 **Tool Use 循环**：
+
+```typescript
+// 简化的主循环伪代码
+async function mainLoop(userInput: string) {
+  const messages = [...history, { role: 'user', content: userInput }]
+  
+  while (true) {
+    const response = await callAnthropicAPI(messages)
+    messages.push(response)
+    
+    // 检查是否有工具调用
+    const toolUses = response.content.filter(block => block.type === 'tool_use')
+    
+    if (toolUses.length === 0) {
+      // 纯文本响应，循环结束
+      break
+    }
+    
+    // 执行所有工具调用
+    for (const toolUse of toolUses) {
+      const tool = findTool(toolUse.name)
+      const result = await tool.execute(toolUse.input, context)
+      messages.push({ role: 'user', content: [result] })
+    }
+  }
+  
+  return messages
+}
+```
+
+## 状态管理
+
+### AppState
+
+核心状态通过 React 组件树传递：
+
+```
+<App> (AppState Provider)
+  ├── <REPL> (主界面)
+  │   ├── <TextInput> (输入框)
+  │   ├── <MessageList> (消息列表)
+  │   └── <ToolOutput> (工具输出)
+  ├── <Dialog> (对话框)
+  └── <StatusBar> (状态栏)
+```
+
+### 持久化状态
+
+| 存储位置 | 内容 |
+|----------|------|
+| `~/.claude/` | 全局配置、认证、记忆 |
+| `.claude/` | 项目配置、会话数据 |
+| `CLAUDE.md` | 项目指令 |
+| `MEMORY.md` | 持久化记忆 |
+| `.claude/sessions/` | 会话历史 |
+
+### State 文件结构
+
+```
+src/state/
+├── AppState.tsx          # 核心状态定义和 Provider
+├── AppStateStore.ts      # Store 实现
+├── store.ts              # Store 工具
+├── selectors.ts          # 状态选择器
+├── onChangeAppState.ts   # 状态变更监听
+└── teammateViewHelpers.ts # Teammate 视图辅助
+```
+
+## 上下文构建
+
+系统提示词的构建是 Claude Code 的核心智能之一：
+
+```typescript
+// context.ts 简化逻辑
+async function buildSystemPrompt() {
+  const parts = []
+  
+  // 1. 基础系统指令（角色定义、行为规则）
+  parts.push(getBaseSystemInstruction())
+  
+  // 2. 工具描述
+  parts.push(getToolDescriptions())
+  
+  // 3. CLAUDE.md 内容
+  parts.push(await getClaudeMdContent())
+  
+  // 4. Git 上下文
+  parts.push(await getGitContext())
+  
+  // 5. 记忆内容
+  parts.push(await getMemoryContent())
+  
+  // 6. 环境信息
+  parts.push(getEnvironmentInfo())
+  
+  return parts.join('\n\n')
+}
+```
+
+## IDE 桥接
+
+Bridge 模块实现了与 IDE 的通信：
+
+```
+┌──────────┐    WebSocket    ┌──────────┐
+│  Claude   │ ◄────────────► │  IDE      │
+│  Code CLI │                │  Extension│
+└──────────┘                 └──────────┘
+```
+
+Bridge 功能：
+- **文件操作**：在 IDE 中打开文件、跳转到行
+- **Diff 展示**：在 IDE 中展示代码修改
+- **诊断信息**：获取 IDE 的 LSP 诊断
+- **选择同步**：获取 IDE 中的选中内容
+- **权限回调**：通过 IDE 弹窗确认权限
+
+关键文件：
+- `bridge/replBridge.ts` — REPL 桥接主逻辑
+- `bridge/bridgeApi.ts` — API 定义
+- `bridge/bridgeMessaging.ts` — 消息协议
+- `bridge/initReplBridge.ts` — 初始化
+
+## 插件系统
+
+```
+src/services/plugins/
+  ├── 加载 .claude/plugins/ 下的插件
+  ├── 注册工具、命令、钩子
+  └── 管理插件生命周期
+```
+
+## 远程会话
+
+```
+src/remote/        # 远程 SSH 会话
+src/server/        # HTTP 服务器模式
+src/upstreamproxy/ # 上游代理
+```
+
+支持场景：
+- SSH 远程开发
+- Docker 容器内运行
+- CI/CD 管道

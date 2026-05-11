@@ -1,0 +1,206 @@
+# 服务层
+
+## 概述
+
+服务层（`src/services/`）封装了 Claude Code 的所有外部交互逻辑，包括 AI API 调用、MCP 协议、LSP 集成、OAuth 认证等。
+
+```
+src/services/
+├── api/                  # Anthropic API 调用
+│   ├── claude.ts         # 核心消息 API
+│   ├── logging.ts        # 请求日志
+│   └── errors.ts         # 错误处理
+├── mcp/                  # MCP 协议
+│   ├── types.ts          # MCP 类型定义
+│   └── ...
+├── lsp/                  # 语言服务协议
+├── oauth/                # OAuth 认证
+├── compact/              # 上下文压缩
+├── plugins/              # 插件加载
+├── analytics/            # 分析统计
+├── SessionMemory/        # 会话记忆
+├── PromptSuggestion/     # 提示建议
+├── AgentSummary/         # Agent 摘要
+├── autoDream/            # 自动推理
+├── extractMemories/      # 记忆提取
+├── MagicDocs/            # 文档魔法
+├── policyLimits/         # 策略限制
+├── settingsSync/         # 设置同步
+├── teamMemorySync/       # 团队记忆同步
+├── remoteManagedSettings/# 远程管理设置
+├── tools/                # 工具服务
+├── toolUseSummary/       # 工具使用摘要
+├── tips/                 # 提示
+├── voice.ts              # 语音服务
+├── voiceKeyterms.ts      # 语音关键词
+├── voiceStreamSTT.ts     # 语音流 STT
+├── tokenEstimation.ts    # Token 估算
+├── claudeAiLimits.ts     # API 限制
+├── diagnosticTracking.ts # 诊断追踪
+├── internalLogging.ts    # 内部日志
+├── notifier.ts           # 通知服务
+├── preventSleep.ts       # 防止休眠
+├── rateLimitMessages.ts  # 速率限制消息
+└── vcr.ts                # VCR 录制回放
+```
+
+## API 服务
+
+### 核心调用
+
+API 服务封装了对 Anthropic Messages API 的调用：
+
+```typescript
+// services/api/claude.ts 核心逻辑
+
+// 流式消息调用
+async function streamMessage(params: {
+  messages: Message[]
+  system: SystemPrompt
+  tools: ToolDefinition[]
+  model: string
+  maxTokens: number
+  thinking?: ThinkingConfig
+}) {
+  const stream = anthropic.messages.stream({
+    model: params.model,
+    max_tokens: params.maxTokens,
+    system: params.system,
+    messages: params.messages,
+    tools: params.tools,
+    stream: true,
+  })
+  
+  return stream
+}
+```
+
+### 用量追踪
+
+```typescript
+// services/api/logging.ts
+interface NonNullableUsage {
+  input_tokens: number
+  output_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+}
+```
+
+### 错误处理
+
+```typescript
+// services/api/errors.ts
+function categorizeRetryableAPIError(error: unknown): {
+  retryable: boolean
+  category: 'rate_limit' | 'overloaded' | 'timeout' | 'auth' | 'other'
+}
+```
+
+## MCP 服务
+
+MCP (Model Context Protocol) 是 Claude Code 扩展性的核心机制：
+
+### MCP 连接类型
+
+| Transport | 说明 | 场景 |
+|-----------|------|------|
+| stdio | 标准输入输出 | 本地进程 |
+| SSE | Server-Sent Events | 远程服务 |
+
+### MCP 工具生命周期
+
+```
+1. 读取配置 → mcp-configs/
+2. 启动服务器进程 / 连接远程端点
+3. 发现工具 → tools/list
+4. 注册到工具表 → MCPTool 实例
+5. 调用工具 → tools/call
+6. 读取资源 → resources/read
+7. 关闭连接
+```
+
+### MCP 类型定义
+
+```typescript
+// services/mcp/types.ts
+interface MCPServerConnection {
+  name: string
+  transport: 'stdio' | 'sse'
+  status: 'connecting' | 'connected' | 'disconnected' | 'error'
+  tools: MCPToolDefinition[]
+  resources: ServerResource[]
+}
+```
+
+## LSP 服务
+
+语言服务协议集成，提供代码智能功能：
+
+```typescript
+// LSP 功能
+- 诊断信息 (diagnostics)
+- 定义跳转 (goto definition)
+- 引用查找 (find references)
+- 符号搜索 (workspace symbols)
+- 悬停信息 (hover)
+- 重命名 (rename)
+- 代码操作 (code actions)
+```
+
+## OAuth 服务
+
+认证流程：
+
+```
+1. 启动本地 HTTP 服务器
+2. 打开浏览器进行 OAuth 授权
+3. 接收回调获取 authorization code
+4. 交换 access token
+5. 存储到 ~/.claude/credentials
+```
+
+## Compact 服务
+
+上下文压缩服务，处理对话超出窗口的情况：
+
+```typescript
+// 压缩策略
+1. 计算当前 token 使用量
+2. 超过阈值时触发压缩
+3. 保留最近 N 条消息
+4. 将早期消息摘要
+5. 保留关键工具调用结果
+```
+
+## SessionMemory 服务
+
+会话间的记忆持久化：
+
+```
+存储位置: .claude/memory/
+格式: Markdown 文件
+读取: 每次启动时加载到上下文
+写入: AI 自主决定是否保存
+```
+
+## VCR 服务
+
+请求/响应录制回放，用于测试和调试：
+
+```typescript
+// 录制模式
+record: 保存所有 API 请求/响应到文件
+// 回放模式
+playback: 从文件读取响应，不实际调用 API
+```
+
+## 语音服务
+
+语音输入处理流水线：
+
+```
+音频流 → voiceStreamSTT → 文本
+文本 → voiceKeyterms → 关键词
+关键词 → 语音命令执行
+```

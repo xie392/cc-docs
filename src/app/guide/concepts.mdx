@@ -1,0 +1,174 @@
+# 核心概念
+
+## Tool（工具）
+
+Tool 是 Claude Code 最核心的抽象。每个工具定义了 AI 可以执行的操作，包含输入 Schema、执行逻辑和结果渲染。
+
+```typescript
+// src/Tool.ts 核心类型
+export interface Tool<TInput, TOutput> {
+  name: string                    // 工具名称
+  inputSchema: ZodSchema          // Zod 输入验证
+  description: string             // 工具描述（给 AI 看）
+  
+  execute(input: TInput, context: ToolUseContext): Promise<ToolResult>
+  renderToolUse?(input: TInput): ReactNode  // UI 渲染
+  renderToolResult?(output: TOutput): ReactNode
+}
+```
+
+工具执行流程：
+
+```
+AI 输出 tool_use block
+  → 匹配 Tool 名称
+  → Zod 验证输入
+  → 权限检查 (canUseTool)
+  → execute() 执行
+  → 返回 tool_result block
+  → AI 继续推理
+```
+
+详见 [工具系统](/tools/overview)。
+
+## Query（查询）
+
+Query 是一次完整的 AI 对话轮次，包含：
+
+- 构建 System Prompt（上下文注入）
+- 调用 Anthropic Messages API
+- 处理 Tool Use 循环
+- 流式输出到终端
+- 成本追踪
+
+```
+用户输入 → processUserInput() → query() → API Call
+  ← streaming response ←
+  → tool_use? → execute tool → tool_result → 继续 API Call
+  ← 最终响应 ←
+```
+
+核心文件：
+- `query.ts` (68KB) — 查询逻辑主文件
+- `QueryEngine.ts` (46KB) — 查询引擎，管理对话状态
+
+## Context（上下文）
+
+Context 管理发送给 AI 的系统提示词和用户上下文：
+
+```typescript
+// src/context.ts 核心函数
+getSystemContext()  // 系统上下文（角色、规则、工具描述）
+getUserContext()    // 用户上下文（git 状态、文件内容、CLAUDE.md）
+```
+
+上下文来源：
+- **System Prompt**：硬编码的 AI 行为指令
+- **CLAUDE.md**：项目级配置文件
+- **Git Status**：当前分支、修改状态
+- **Memory**：持久化记忆
+- **环境信息**：平台、Shell、工作目录
+
+## Permission（权限）
+
+Claude Code 实现了精细的权限控制系统：
+
+| 权限模式 | 说明 |
+|----------|------|
+| `default` | 每次危险操作需用户确认 |
+| `plan` | 只读模式，不可修改文件 |
+| `auto-accept` | 自动接受所有操作（危险） |
+| `bypass` | 完全绕过权限检查 |
+
+权限检查流程：
+```
+Tool.execute()
+  → canUseTool(name, input, mode)
+  → 用户确认对话框 / 自动通过 / 拒绝
+  → 执行或跳过
+```
+
+## Message（消息）
+
+对话中的消息类型：
+
+```typescript
+type Message =
+  | UserMessage         // 用户输入
+  | AssistantMessage    // AI 响应（含 tool_use blocks）
+  | SystemMessage       // 系统消息
+  | ProgressMessage     // 进度更新
+  | AttachmentMessage   // 附件（图片等）
+```
+
+## State（状态）
+
+全局状态使用 React Hooks + 自定义 Store 管理：
+
+```typescript
+// src/state/AppState.tsx
+interface AppState {
+  messages: Message[]
+  isLoading: boolean
+  permissionMode: PermissionMode
+  currentModel: string
+  cost: CostTracker
+  // ... 更多状态
+}
+```
+
+## Compact（压缩）
+
+当对话超过上下文窗口时，Compact 机制自动压缩历史消息：
+
+- 保留最近的消息
+- 将早期消息摘要为压缩格式
+- 保留工具调用的关键结果
+
+## Hook（钩子）
+
+两种含义的 Hook：
+
+1. **React Hooks**：70+ 自定义 Hook 管理组件逻辑
+2. **Shell Hooks**：用户配置的 Shell 命令，在特定事件触发时执行
+
+Shell Hooks 配置：
+```json
+{
+  "hooks": {
+    "PreToolUse": [{ "command": "echo 'about to use tool'" }],
+    "PostToolUse": [{ "command": "eslint $FILE" }],
+    "Notification": [{ "command": "notify-send 'Claude done'" }]
+  }
+}
+```
+
+## MCP（Model Context Protocol）
+
+MCP 允许 Claude Code 连接外部工具服务器：
+
+- **Transport**: stdio / SSE
+- **工具发现**: 自动列出 MCP 服务器提供的工具
+- **资源读取**: 读取 MCP 服务器暴露的资源
+- **认证**: 支持 OAuth 流程
+
+## Feature Flags
+
+使用 Bun 的编译时特性门控：
+
+```typescript
+import { feature } from 'bun:bundle'
+
+// 编译时决定，未启用的代码会被消除
+if (feature('PROACTIVE')) {
+  // 主动式行为代码
+}
+```
+
+已知 Feature Flags：
+- `PROACTIVE` — 主动式行为（如定时任务）
+- `KAIROS` — 时间感知功能
+- `AGENT_TRIGGERS` — Agent 触发器（Cron）
+- `AGENT_TRIGGERS_REMOTE` — 远程触发器
+- `MONITOR_TOOL` — 监控工具
+- `ABLATION_BASELINE` — 实验基线

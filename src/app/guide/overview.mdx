@@ -1,0 +1,155 @@
+# 项目概览
+
+## 基本信息
+
+Claude Code 是 Anthropic 官方的命令行 AI 智能体工具，允许用户在终端中与 Claude 进行交互式对话，执行代码编写、文件编辑、命令运行等任务。
+
+- **包名**: `claude-code-local`
+- **版本**: `999.0.0-local` (泄露修改版)
+- **运行时**: Bun
+- **入口**: `./bin/claude-haha`
+
+## 技术栈详解
+
+### 核心依赖
+
+```json
+{
+  "@anthropic-ai/sdk": "^0.80.0",        // Anthropic AI SDK
+  "@modelcontextprotocol/sdk": "^1.29.0", // MCP 协议 SDK
+  "ink": "^6.8.0",                        // React 终端 UI 框架
+  "react": "^19.2.4",                     // React 19
+  "zod": "^4.3.6",                        // Schema 验证
+  "@commander-js/extra-typings": "^14.0.0" // CLI 参数解析
+}
+```
+
+### 终端渲染方案
+
+Claude Code 使用 **Ink** 作为终端 UI 框架。Ink 是一个基于 React 的终端渲染库，通过 `react-reconciler` 将 React 组件树渲染为终端文本输出。
+
+关键特点：
+- React 组件模型（函数组件 + Hooks）
+- 声明式 UI 定义
+- Flexbox 布局系统
+- 实时重渲染（流式输出）
+
+### AI 调用方案
+
+通过 `@anthropic-ai/sdk` 直接调用 Anthropic Messages API：
+- 支持 Tool Use（函数调用）
+- 流式响应（streaming）
+- 思维链扩展（thinking/extended thinking）
+- 多模型切换（Haiku / Sonnet / Opus）
+
+### Feature Flags 系统
+
+Claude Code 使用 Bun 的 `feature()` 函数进行编译时特性门控，实现条件代码消除（DCE）：
+
+```typescript
+import { feature } from 'bun:bundle'
+
+// 编译时决定是否包含此代码
+const SleepTool = feature('PROACTIVE') || feature('KAIROS')
+  ? require('./tools/SleepTool/SleepTool.js').SleepTool
+  : null
+```
+
+## 目录结构
+
+```
+src/
+├── entrypoints/        # 入口点 (CLI, MCP, SDK, Init)
+├── components/         # Ink React 终端 UI 组件 (140+)
+├── hooks/              # React Hooks (70+)
+├── tools/              # 内置工具 (40+)
+├── commands/           # 斜杠命令 (/commit, /review 等)
+├── services/           # 业务服务层
+│   ├── api/            # Anthropic API 调用
+│   ├── mcp/            # MCP 协议实现
+│   ├── lsp/            # 语言服务协议
+│   ├── oauth/          # OAuth 认证
+│   ├── compact/        # 上下文压缩
+│   └── plugins/        # 插件系统
+├── bridge/             # IDE 桥接 (VSCode/JetBrains)
+├── state/              # 全局状态管理
+├── context/            # 上下文管理
+├── utils/              # 工具函数 (330+)
+├── vim/                # Vim 模式
+├── voice/              # 语音输入
+├── native-ts/          # 原生模块绑定
+├── schemas/            # JSON Schema 定义
+├── types/              # TypeScript 类型定义
+├── constants/          # 常量定义
+├── ink/                # Ink 扩展组件
+├── keybindings/        # 快捷键配置
+├── migrations/         # 数据迁移
+├── memdir/             # 记忆目录 (.claude/)
+├── skills/             # 技能系统
+├── tasks/              # 任务系统
+├── outputStyles/       # 输出样式
+├── screens/            # 屏幕组件
+├── server/             # HTTP 服务器
+├── remote/             # 远程会话
+├── upstreamproxy/      # 上游代理
+├── coordinator/        # 协调器 (多 Agent)
+├── buddy/              # Buddy 系统
+├── assistant/          # 助手模块
+├── bootstrap/          # 启动引导
+├── moreright/          # 更多权限
+├── plugins/            # 插件目录
+├── query/              # 查询模块
+├── vendor/             # 第三方内联代码
+│
+├── main.tsx            # 主入口组件 (804KB!)
+├── QueryEngine.ts      # 查询引擎 (46KB)
+├── query.ts            # 查询逻辑 (68KB)
+├── Tool.ts             # 工具基类 (29KB)
+├── tools.ts            # 工具注册 (17KB)
+├── commands.ts         # 命令注册 (25KB)
+├── context.ts          # 上下文构建 (6KB)
+├── setup.ts            # 初始化设置 (21KB)
+├── interactiveHelpers.tsx # 交互辅助 (57KB)
+├── dialogLaunchers.tsx # 对话启动器 (22KB)
+├── history.ts          # 历史记录 (22KB)
+├── cost-tracker.ts     # 成本追踪 (10KB)
+├── Task.ts             # 任务定义 (3KB)
+├── tasks.ts            # 任务注册 (1KB)
+└── ink.ts              # Ink 配置 (3KB)
+```
+
+## 启动流程
+
+```
+1. bin/claude-haha
+   └── src/entrypoints/cli.tsx
+       ├── 快速路径: --version (零模块加载)
+       ├── 快速路径: --dump-system-prompt
+       └── 正常路径:
+           ├── init() — 初始化配置、环境
+           ├── setup() — 权限、OAuth、MCP
+           └── renderApp() — Ink 渲染主 UI
+               └── <App /> → <REPL /> → 主循环
+```
+
+### 入口点
+
+Claude Code 有多个入口点：
+
+| 入口 | 文件 | 用途 |
+|------|------|------|
+| CLI | `entrypoints/cli.tsx` | 终端交互模式 |
+| MCP | `entrypoints/mcp.ts` | MCP 服务器模式 |
+| SDK | `entrypoints/sdk/` | 编程 SDK 模式 |
+| Init | `entrypoints/init.ts` | 项目初始化 |
+
+## 代码规模
+
+| 指标 | 数值 |
+|------|------|
+| 源文件数 | 800+ |
+| 工具数量 | 40+ |
+| React Hooks | 70+ |
+| UI 组件 | 140+ |
+| 工具函数 | 330+ |
+| 主入口文件 | 804KB (main.tsx) |

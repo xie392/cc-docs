@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cat node_modules/nextra/dist/schemas.js\",\"description\":\"Check reactNode schema definition in nextra\"}",
+  "error": "Exit code 1\ncat: node_modules/nextra/dist/schemas.js: No such file or directory",
+  "timestamp": "2026-05-11T01:31:41.328Z",
+  "retry_count": 1
+}

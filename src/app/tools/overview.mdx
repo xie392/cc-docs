@@ -1,0 +1,254 @@
+# 工具系统
+
+## 概述
+
+Claude Code 的工具系统是其最核心的设计之一。AI 通过 Tool Use 协议调用工具，执行文件操作、运行命令、搜索代码等任务。
+
+工具系统包含 40+ 内置工具，每个工具都是 `Tool` 接口的具体实现。
+
+## Tool 基类
+
+```typescript
+// src/Tool.ts 核心类型定义
+export interface Tool<TInput = unknown, TOutput = unknown> {
+  name: string                    // 工具唯一标识
+  description: string             // 给 AI 的工具描述
+  
+  // 输入验证 Schema（Zod v4）
+  inputSchema: z.ZodType<TInput>
+  
+  // 执行逻辑
+  execute(
+    input: TInput,
+    context: ToolUseContext
+  ): Promise<ToolResult>
+  
+  // UI 渲染（可选）
+  renderToolUse?(input: TInput): ReactNode
+  renderToolResult?(result: ToolResult): ReactNode
+  
+  // 权限相关
+  isReadOnly?: boolean            // 是否只读工具
+  requiresPermission?: boolean    // 是否需要权限确认
+}
+```
+
+### ToolUseContext
+
+工具执行时的上下文：
+
+```typescript
+interface ToolUseContext {
+  abortController: AbortController  // 取消控制
+  permissionMode: PermissionMode    // 当前权限模式
+  canUseTool: CanUseToolFn         // 权限检查函数
+  options: ToolUseOptions          // 工具选项
+  fileStateCache: FileStateCache   // 文件状态缓存
+  // ... 更多上下文
+}
+```
+
+### ToolResult
+
+工具执行结果：
+
+```typescript
+type ToolResult = {
+  type: 'tool_result'
+  tool_use_id: string
+  content: string | ContentBlock[]
+  is_error?: boolean
+}
+```
+
+## 内置工具一览
+
+### 文件操作
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| FileReadTool | `tools/FileReadTool/` | 读取文件内容 |
+| FileEditTool | `tools/FileEditTool/` | 精确字符串替换编辑 |
+| FileWriteTool | `tools/FileWriteTool/` | 写入/创建文件 |
+| NotebookEditTool | `tools/NotebookEdit/` | Jupyter Notebook 编辑 |
+
+### 搜索工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| GlobTool | `tools/GlobTool/` | 文件名模式匹配搜索 |
+| GrepTool | `tools/GrepTool/` | 内容正则搜索 |
+| ToolSearchTool | `tools/ToolSearchTool/` | 搜索可用工具 |
+| LSPTool | `tools/LSPTool/` | LSP 代码搜索 |
+
+### 执行工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| BashTool | `tools/BashTool/` | 执行 Shell 命令 |
+| PowerShellTool | `tools/PowerShellTool/` | Windows PowerShell |
+
+### 交互工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| AskUserQuestionTool | `tools/AskUserQuestion/` | 向用户提问 |
+| TodoWriteTool | `tools/TodoWriteTool/` | 任务列表管理 |
+
+### 规划工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| EnterPlanModeTool | `tools/EnterPlanModeTool/` | 进入规划模式 |
+| ExitPlanModeTool | `tools/ExitPlanModeTool/` | 退出规划模式 |
+| EnterWorktreeTool | `tools/EnterWorktreeTool/` | 进入 Worktree |
+| ExitWorktreeTool | `tools/ExitWorktreeTool/` | 退出 Worktree |
+
+### Agent 协作工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| AgentTool | `tools/AgentTool/` | 子 Agent 调用 |
+| SendMessageTool | `tools/SendMessageTool/` | Agent 间通信 |
+| TeamCreateTool | `tools/TeamCreateTool/` | 创建 Team |
+| TeamDeleteTool | `tools/TeamDeleteTool/` | 删除 Team |
+
+### 任务管理工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| TaskCreateTool | `tools/TaskCreateTool/` | 创建任务 |
+| TaskGetTool | `tools/TaskGetTool/` | 获取任务 |
+| TaskListTool | `tools/TaskListTool/` | 列出任务 |
+| TaskUpdateTool | `tools/TaskUpdateTool/` | 更新任务 |
+| TaskOutputTool | `tools/TaskOutputTool/` | 获取任务输出 |
+| TaskStopTool | `tools/TaskStopTool/` | 停止任务 |
+
+### 网络工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| WebFetchTool | `tools/WebFetchTool/` | 抓取网页 |
+| WebSearchTool | `tools/WebSearchTool/` | 网络搜索 |
+
+### MCP 工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| MCPTool | `tools/MCPTool/` | 调用 MCP 服务器工具 |
+| ListMcpResourcesTool | `tools/ListMcpResources/` | 列出 MCP 资源 |
+| ReadMcpResourceTool | `tools/ReadMcpResource/` | 读取 MCP 资源 |
+| McpAuthTool | `tools/McpAuthTool/` | MCP 认证 |
+
+### 其他工具
+
+| 工具 | 目录 | 说明 |
+|------|------|------|
+| SkillTool | `tools/SkillTool/` | 技能调用 |
+| ConfigTool | `tools/ConfigTool/` | 配置管理 |
+| BriefTool | `tools/BriefTool/` | 摘要工具 |
+| ScheduleCronTool | `tools/ScheduleCronTool/` | 定时任务 (feature flag) |
+| SleepTool | `tools/SleepTool/` | 睡眠等待 (feature flag) |
+
+## 工具注册
+
+工具在 `tools.ts` 中统一注册：
+
+```typescript
+// src/tools.ts（简化）
+export function getTools(context: ToolRegistrationContext): Tools {
+  return [
+    new BashTool(context),
+    new FileReadTool(context),
+    new FileEditTool(context),
+    new FileWriteTool(context),
+    new GlobTool(context),
+    new GrepTool(context),
+    new WebSearchTool(context),
+    new WebFetchTool(context),
+    new AgentTool(context),
+    new AskUserQuestionTool(context),
+    // ... 更多工具
+    
+    // Feature flag 控制的工具
+    ...(feature('AGENT_TRIGGERS') ? cronTools : []),
+    ...(feature('PROACTIVE') ? [new SleepTool(context)] : []),
+  ]
+}
+```
+
+## 工具实现示例
+
+以 BashTool 为例，展示一个完整工具的实现结构：
+
+```
+tools/BashTool/
+├── BashTool.ts          # 工具主类
+├── bashToolHelpers.ts   # 辅助函数
+├── BashOutput.tsx       # 输出渲染组件
+└── test/                # 测试
+```
+
+```typescript
+// 简化的 BashTool 实现
+class BashTool implements Tool<BashInput, BashOutput> {
+  name = 'Bash'
+  description = 'Execute a bash command...'
+  
+  inputSchema = z.object({
+    command: z.string().describe('The command to execute'),
+    timeout: z.number().optional(),
+    working_directory: z.string().optional(),
+  })
+  
+  async execute(input: BashInput, context: ToolUseContext) {
+    // 1. 权限检查
+    const permission = await context.canUseTool(this.name, input)
+    if (permission === 'deny') return { error: 'Permission denied' }
+    
+    // 2. 执行命令
+    const result = await execa(input.command, {
+      cwd: input.working_directory,
+      timeout: input.timeout,
+      signal: context.abortController.signal,
+    })
+    
+    // 3. 返回结果
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+    }
+  }
+}
+```
+
+## MCP 工具集成
+
+MCP 工具是动态的，运行时从 MCP 服务器发现：
+
+```typescript
+// MCP 工具发现流程
+1. 读取 MCP 配置 (.claude/mcp-configs/)
+2. 连接 MCP 服务器 (stdio/SSE)
+3. 调用 tools/list 获取工具列表
+4. 为每个 MCP 工具创建 MCPTool 实例
+5. 注册到工具注册表
+```
+
+MCPTool 是一个通用适配器，将 MCP 工具协议映射为内部 Tool 接口。
+
+## 工具匹配
+
+工具名称匹配支持别名：
+
+```typescript
+// src/Tool.ts
+function toolMatchesName(tool: Tool, name: string): boolean {
+  // 精确匹配
+  if (tool.name === name) return true
+  // 别名匹配
+  if (tool.aliases?.includes(name)) return true
+  return false
+}
+```

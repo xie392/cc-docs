@@ -1,0 +1,351 @@
+# 智能体开发指南
+
+## 概述
+
+基于 Claude Code 的架构，本节介绍如何开发自定义 AI 智能体。Claude Code 提供了多种 Agent 扩展机制。
+
+## AgentTool — 子 Agent 调用
+
+AgentTool 是 Claude Code 内建的子 Agent 机制，允许主 Agent 生成子 Agent 执行独立任务。
+
+### 工作原理
+
+```
+主 Agent
+  │
+  ├── 决定需要子任务
+  │
+  └── 调用 AgentTool
+       │
+       ├── 创建新的对话上下文
+       ├── 继承工具集（可选子集）
+       ├── 执行独立对话循环
+       ├── 返回结果摘要
+       │
+       └── 主 Agent 继续推理
+```
+
+### Agent 定义
+
+```typescript
+// src/tools/AgentTool/loadAgentsDir.ts
+interface AgentDefinition {
+  name: string           // Agent 名称
+  description: string    // Agent 描述
+  instructions: string   // Agent 指令
+  tools?: string[]       // 可用工具子集
+  model?: string         // 使用的模型
+}
+```
+
+### 自定义 Agent
+
+在 `.claude/agents/` 目录下创建 Agent 定义文件：
+
+```markdown
+<!-- .claude/agents/code-reviewer.md -->
+---
+name: code-reviewer
+description: Review code for quality, security, and maintainability
+tools:
+  - FileReadTool
+  - GrepTool
+  - GlobTool
+  - BashTool
+model: claude-sonnet-4-6
+---
+
+You are a code reviewer. Analyze the provided code for:
+1. Security vulnerabilities
+2. Performance issues
+3. Code style violations
+4. Missing error handling
+
+Provide actionable feedback with specific line references.
+```
+
+## Team — 多 Agent 协作
+
+Team 系统允许多个 Agent 组成团队并行工作。
+
+### Team 架构
+
+```
+Team Lead (主 Agent)
+  ├── Agent A (researcher)
+  │   ├── 独立对话上下文
+  │   └── 独立工具集
+  ├── Agent B (coder)
+  │   ├── 独立对话上下文
+  │   └── 独立工具集
+  └── Agent C (tester)
+      ├── 独立对话上下文
+      └── 独立工具集
+```
+
+### Team 创建流程
+
+```typescript
+// 1. 创建 Team
+const team = await TeamCreate({
+  team_name: "feature-team",
+  description: "Building feature X"
+})
+
+// 2. 创建任务
+TaskCreate({ subject: "Research API design", description: "..." })
+TaskCreate({ subject: "Implement frontend", description: "..." })
+TaskCreate({ subject: "Write tests", description: "..." })
+
+// 3. 启动 Agent 作为队友
+spawnAgent({ name: "researcher", team_name: "feature-team" })
+spawnAgent({ name: "coder", team_name: "feature-team" })
+
+// 4. Agent 间通信
+SendMessage({ to: "researcher", message: "Start on API design" })
+
+// 5. 任务完成
+TaskUpdate({ taskId: "1", status: "completed" })
+```
+
+### 任务协调
+
+```
+TaskList → 查看所有任务
+TaskGet  → 获取任务详情
+TaskUpdate → 更新任务状态/分配
+SendMessage → Agent 间通信
+```
+
+### 共享状态
+
+```
+~/.claude/teams/{team-name}/config.json    # Team 配置
+~/.claude/tasks/{team-name}/                # 任务目录
+```
+
+## SDK 集成
+
+Claude Code 提供 SDK 模式，允许编程式调用：
+
+### SDK 类型
+
+```typescript
+// src/entrypoints/agentSdkTypes.ts
+interface SDKConfig {
+  model?: string
+  permissionMode?: PermissionMode
+  tools?: Tool[]
+  systemPrompt?: string
+}
+
+interface SDKMessage {
+  role: 'user' | 'assistant'
+  content: ContentBlock[]
+}
+
+interface SDKStatus {
+  type: 'idle' | 'running' | 'waiting_for_permission' | 'error'
+}
+```
+
+### SDK 使用
+
+```typescript
+import { ClaudeCode } from 'claude-code-sdk'
+
+const agent = new ClaudeCode({
+  model: 'claude-sonnet-4-6',
+  permissionMode: 'auto-accept',
+  workingDirectory: '/path/to/project',
+})
+
+// 流式对话
+const stream = agent.chat('Implement user authentication')
+for await (const event of stream) {
+  if (event.type === 'text') {
+    process.stdout.write(event.content)
+  } else if (event.type === 'tool_use') {
+    console.log(`Tool: ${event.name}`)
+  }
+}
+```
+
+## 工具开发
+
+### 创建自定义工具
+
+```typescript
+import { z } from 'zod/v4'
+import type { Tool, ToolResult } from './Tool.js'
+
+class MyCustomTool implements Tool<MyInput, MyOutput> {
+  name = 'MyCustomTool'
+  description = 'A custom tool that does something useful'
+  
+  inputSchema = z.object({
+    query: z.string().describe('Search query'),
+    limit: z.number().optional().default(10),
+  })
+  
+  isReadOnly = true
+  
+  async execute(input: MyInput, context: ToolUseContext): Promise<ToolResult> {
+    // 实现工具逻辑
+    const result = await doSomething(input.query, input.limit)
+    
+    return {
+      type: 'tool_result',
+      tool_use_id: context.toolUseId,
+      content: JSON.stringify(result),
+    }
+  }
+  
+  renderToolUse(input: MyInput) {
+    return `Searching for: ${input.query}`
+  }
+}
+```
+
+### MCP 工具服务器
+
+创建 MCP 工具服务器是扩展 Claude Code 的推荐方式：
+
+```typescript
+// mcp-server.ts
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+
+const server = new Server({
+  name: 'my-tools',
+  version: '1.0.0',
+})
+
+server.setRequestHandler('tools/list', async () => ({
+  tools: [
+    {
+      name: 'database_query',
+      description: 'Query the database',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string', description: 'SQL query' },
+        },
+        required: ['sql'],
+      },
+    },
+  ],
+}))
+
+server.setRequestHandler('tools/call', async (request) => {
+  if (request.params.name === 'database_query') {
+    const result = await executeSQL(request.params.arguments.sql)
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] }
+  }
+})
+
+const transport = new StdioServerTransport()
+await server.connect(transport)
+```
+
+配置 MCP 服务器：
+
+```json
+// .claude/mcp-configs/my-tools.json
+{
+  "mcpServers": {
+    "my-tools": {
+      "command": "node",
+      "args": ["./mcp-server.ts"],
+      "env": {
+        "DB_URL": "sqlite:///data.db"
+      }
+    }
+  }
+}
+```
+
+## 技能系统
+
+Skills 是一种轻量级的 Agent 扩展机制：
+
+```
+src/skills/
+├── 加载 .claude/skills/ 下的技能
+├── 技能定义：名称、触发模式、指令
+└── 通过 SkillTool 调用
+```
+
+## 斜杠命令
+
+在 `src/commands/` 下定义斜杠命令：
+
+```typescript
+// src/commands/review.ts
+export const reviewCommand: Command = {
+  name: 'review',
+  description: 'Review code changes',
+  execute: async (context) => {
+    // 命令逻辑
+  }
+}
+```
+
+内置命令：
+| 命令 | 说明 |
+|------|------|
+| `/init` | 初始化项目 |
+| `/commit` | 生成 commit |
+| `/review` | 代码审查 |
+| `/security-review` | 安全审查 |
+| `/insights` | 项目洞察 |
+| `/brief` | 项目简报 |
+| `/advisor` | 顾问建议 |
+
+## 开发最佳实践
+
+### 1. 工具设计原则
+
+- **单一职责**：每个工具只做一件事
+- **幂等性**：相同输入产生相同结果
+- **可取消**：支持 AbortController
+- **有界的输出**：限制输出大小
+
+### 2. Agent 指令编写
+
+```markdown
+# 好的指令
+You are a code reviewer. Focus on:
+- Security vulnerabilities
+- Performance issues
+
+Always provide specific file paths and line numbers.
+
+# 不好的指令  
+You are an AI assistant. Help with everything.
+```
+
+### 3. 权限设计
+
+- 只读工具默认无需确认
+- 写操作需要用户确认
+- 危险操作需要明确授权
+- 支持权限模式切换
+
+### 4. 错误处理
+
+```typescript
+// 工具执行中的错误处理
+async execute(input, context) {
+  try {
+    const result = await riskyOperation(input)
+    return { content: JSON.stringify(result) }
+  } catch (error) {
+    // 返回错误信息给 AI，让它决定如何处理
+    return {
+      content: `Error: ${error.message}`,
+      is_error: true,
+    }
+  }
+}
+```

@@ -1,0 +1,31 @@
+{
+  "index": {
+    "title": "首页",
+    "type": "page",
+    "display": "hidden"
+  },
+  "guide": {
+    "title": "项目概览",
+    "type": "page"
+  },
+  "architecture": {
+    "title": "架构设计",
+    "type": "page"
+  },
+  "tools": {
+    "title": "工具系统",
+    "type": "page"
+  },
+  "services": {
+    "title": "服务层",
+    "type": "page"
+  },
+  "hooks": {
+    "title": "Hooks 体系",
+    "type": "page"
+  },
+  "agent-dev": {
+    "title": "智能体开发",
+    "type": "page"
+  }
+}

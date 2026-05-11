@@ -1,0 +1,221 @@
+# Hooks 体系
+
+## 概述
+
+Claude Code 中有两种 "Hook" 概念：
+
+1. **React Hooks**：70+ 自定义 Hook，管理组件逻辑和副作用
+2. **Shell Hooks**：用户配置的外部命令，在特定事件触发时执行
+
+## React Hooks
+
+### 核心交互 Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useTextInput` | `hooks/useTextInput.ts` | 文本输入管理 |
+| `useVimInput` | `hooks/useVimInput.ts` | Vim 模式输入 |
+| `usePasteHandler` | `hooks/usePasteHandler.ts` | 粘贴处理 |
+| `useSearchInput` | `hooks/useSearchInput.ts` | 搜索输入 |
+| `usePromptSuggestion` | `hooks/usePromptSuggestion.ts` | 提示建议 |
+| `useInputBuffer` | `hooks/useInputBuffer.ts` | 输入缓冲 |
+
+### 工具相关 Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useCanUseTool` | `hooks/useCanUseTool.ts` | 工具权限判断 |
+| `useMergedTools` | `hooks/useMergedTools.ts` | 合并内置+MCP+插件工具 |
+| `useMergedCommands` | `hooks/useMergedCommands.ts` | 合并斜杠命令 |
+| `useMergedClients` | `hooks/useMergedClients.ts` | 合并 MCP 客户端 |
+| `useManagePlugins` | `hooks/useManagePlugins.ts` | 插件管理 |
+
+### 对话/查询 Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useMainLoopModel` | `hooks/useMainLoopModel.ts` | 主循环模型选择 |
+| `useAssistantHistory` | `hooks/useAssistantHistory.ts` | 助手历史 |
+| `useHistorySearch` | `hooks/useHistorySearch.ts` | 历史搜索 |
+| `useCommandQueue` | `hooks/useCommandQueue.ts` | 命令队列 |
+
+### 任务/Agent Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useTasksV2` | `hooks/useTasksV2.ts` | 任务系统 V2 |
+| `useTaskListWatcher` | `hooks/useTaskListWatcher.ts` | 任务列表监听 |
+| `useSwarmInitialization` | `hooks/useSwarmInitialization.ts` | Swarm 初始化 |
+| `useSwarmPermissionPoller` | `hooks/useSwarmPermissionPoller.ts` | Swarm 权限轮询 |
+| `useRemoteSession` | `hooks/useRemoteSession.ts` | 远程会话 |
+| `useSSHSession` | `hooks/useSSHSession.ts` | SSH 会话 |
+
+### IDE/桥接 Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useIdeConnectionStatus` | `hooks/useIdeConnectionStatus.ts` | IDE 连接状态 |
+| `useIdeSelection` | `hooks/useIdeSelection.ts` | IDE 选中内容 |
+| `useIdeAtMentioned` | `hooks/useIdeAtMentioned.ts` | IDE @提及 |
+| `useIdeLogging` | `hooks/useIdeLogging.ts` | IDE 日志 |
+| `useDirectConnect` | `hooks/useDirectConnect.ts` | 直连模式 |
+| `useDiffInIDE` | `hooks/useDiffInIDE.ts` | IDE Diff 展示 |
+
+### UI/渲染 Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useVirtualScroll` | `hooks/useVirtualScroll.ts` | 虚拟滚动 |
+| `useTerminalSize` | `hooks/useTerminalSize.ts` | 终端尺寸 |
+| `useBlink` | `hooks/useBlink.ts` | 光标闪烁 |
+| `useElapsedTime` | `hooks/useElapsedTime.ts` | 计时器 |
+| `useCopyOnSelect` | `hooks/useCopyOnSelect.ts` | 选中复制 |
+
+### 设置/配置 Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useSettings` | `hooks/useSettings.ts` | 设置读写 |
+| `useSettingsChange` | `hooks/useSettingsChange.ts` | 设置变更监听 |
+| `useDynamicConfig` | `hooks/useDynamicConfig.ts` | 动态配置 |
+
+### 定时/调度 Hooks
+
+| Hook | 文件 | 说明 |
+|------|------|------|
+| `useScheduledTasks` | `hooks/useScheduledTasks.ts` | 定时任务 |
+| `useTimeout` | `hooks/useTimeout.ts` | 超时处理 |
+| `useNotifyAfterTimeout` | `hooks/useNotifyAfterTimeout.ts` | 超时通知 |
+| `useMinDisplayTime` | `hooks/useMinDisplayTime.ts` | 最小展示时间 |
+
+### 其他 Hooks
+
+| Hook | 说明 |
+|------|------|
+| `useCancelRequest` | 取消请求 |
+| `useClipboardImageHint` | 剪贴板图片提示 |
+| `useDiffData` | Diff 数据 |
+| `useDoublePress` | 双击检测 |
+| `useExitOnCtrlCD` | Ctrl+C/D 退出 |
+| `useFileHistorySnapshotInit` | 文件历史快照 |
+| `useAwaySummary` | 离线摘要 |
+| `useBackgroundTaskNavigation` | 后台任务导航 |
+| `useInboxPoller` | 收件箱轮询 |
+| `useMailboxBridge` | 邮箱桥接 |
+| `useMemoryUsage` | 内存使用 |
+| `usePrStatus` | PR 状态 |
+| `useSessionBackgrounding` | 会话后台化 |
+| `useTeammateViewAutoExit` | 队友视图自动退出 |
+| `useUpdateNotification` | 更新通知 |
+| `useVoice` | 语音输入 |
+| `useVoiceEnabled` | 语音启用状态 |
+| `useLogMessages` | 日志消息 |
+| `useIssueFlagBanner` | Issue 标记横幅 |
+| `useSkillImprovementSurvey` | 技能改进调查 |
+| `useSkillsChange` | 技能变更 |
+| `useDeferredHookMessages` | 延迟 Hook 消息 |
+
+## Shell Hooks
+
+用户可以在 `.claude/settings.json` 中配置 Shell Hooks：
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "echo 'Running: $COMMAND'",
+        "timeout": 5000
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "FileEditTool",
+        "command": "npx eslint $FILE_PATH",
+        "timeout": 10000
+      }
+    ],
+    "Notification": [
+      {
+        "command": "osascript -e 'display notification \"Claude Code 完成\"'"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "echo 'Session ended'"
+      }
+    ]
+  }
+}
+```
+
+### Hook 事件类型
+
+| 事件 | 触发时机 | 可用变量 |
+|------|----------|----------|
+| `PreToolUse` | 工具执行前 | `$TOOL_NAME`, `$INPUT` |
+| `PostToolUse` | 工具执行后 | `$TOOL_NAME`, `$RESULT` |
+| `Notification` | 通知时 | `$MESSAGE` |
+| `Stop` | 会话结束时 | — |
+
+### Hook 执行流程
+
+```
+1. 事件触发
+2. 匹配 matcher（工具名/正则）
+3. 执行 command
+4. 超时检查
+5. 返回结果
+   - exit 0: 继续
+   - exit 2: 阻止操作（仅 PreToolUse）
+   - 其他: 警告但继续
+```
+
+## Hooks 设计模式
+
+### 状态聚合模式
+
+```typescript
+// useMergedTools: 合并多个来源的工具
+function useMergedTools() {
+  const builtInTools = useBuiltInTools()
+  const mcpTools = useMcpTools()
+  const pluginTools = usePluginTools()
+  
+  return useMemo(() => [
+    ...builtInTools,
+    ...mcpTools,
+    ...pluginTools,
+  ], [builtInTools, mcpTools, pluginTools])
+}
+```
+
+### 轮询模式
+
+```typescript
+// useInboxPoller: 定期轮询收件箱
+function useInboxPoller() {
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const messages = await fetchInbox()
+      if (messages.length > 0) {
+        setMessages(messages)
+      }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [])
+}
+```
+
+### 事件监听模式
+
+```typescript
+// useSettingsChange: 监听配置变更
+function useSettingsChange(callback: (settings: Settings) => void) {
+  useEffect(() => {
+    const watcher = watchSettings(callback)
+    return () => watcher.close()
+  }, [callback])
+}
+```
