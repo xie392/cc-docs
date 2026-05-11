@@ -1,0 +1,236 @@
+# 会话记忆
+
+## 概述
+
+SessionMemory 服务实现了跨会话的记忆持久化，让 AI 能记住之前的工作上下文、用户偏好和项目信息。
+
+## 目录结构
+
+```
+src/services/SessionMemory/
+├── SessionMemory.ts       # 核心记忆服务
+└── ...
+```
+
+## 记忆类型
+
+### 类型定义
+
+```typescript
+type MemoryType = 
+  | 'user'       // 用户信息：角色、偏好、知识
+  | 'feedback'   // 反馈：行为纠正、确认的做法
+  | 'project'    // 项目：工作上下文、目标、状态
+  | 'reference'  // 参考：外部资源指针
+```
+
+### 各类型用途
+
+| 类型 | 存储内容 | 示例 |
+|------|----------|------|
+| user | 用户角色、偏好 | "用户是后端工程师，偏好 Go 语言" |
+| feedback | 行为指导 | "不要使用 mock 数据库，之前出过问题" |
+| project | 项目上下文 | "正在做认证中间件重写，因合规要求" |
+| reference | 外部资源 | "流水线 Bug 在 Linear 项目 INGEST 中追踪" |
+
+## 存储位置
+
+```
+.claude/memory/
+├── user_role.md           # 用户角色记忆
+├── feedback_testing.md    # 测试反馈
+├── project_auth.md        # 项目上下文
+├── reference_dashboards.md # 外部参考
+└── MEMORY.md              # 记忆索引
+```
+
+## 文件格式
+
+### 记忆文件
+
+每个记忆文件使用 YAML frontmatter + Markdown 格式：
+
+```markdown
+---
+name: 测试策略
+description: 关于测试方法的用户反馈
+type: feedback
+---
+
+集成测试必须连接真实数据库，不要使用 mock。
+**Why:** 上季度 mock 测试通过但生产迁移失败
+**How to apply:** 涉及数据库的测试必须用真实连接
+```
+
+### MEMORY.md 索引
+
+```markdown
+- [用户角色](user_role.md) — 后端工程师，偏好 Go
+- [测试策略](feedback_testing.md) — 必须用真实数据库
+- [认证重写](project_auth.md) — 合规驱动的中间件重写
+```
+
+索引文件每次会话启动时自动加载，记忆内容按需读取。
+
+## 记忆生命周期
+
+```
+1. 触发保存
+   │
+   ├── 用户明确要求 ("记住这个")
+   ├── AI 自主判断有价值
+   └── 反馈模式触发
+   │
+   ▼
+2. 选择记忆类型
+   │
+   ├── 用户信息 → user
+   ├── 行为纠正 → feedback
+   ├── 项目上下文 → project
+   └── 外部资源 → reference
+   │
+   ▼
+3. 写入记忆文件
+   │
+   ├── 生成文件名 (类型_主题.md)
+   ├── 写入 frontmatter
+   ├── 写入内容
+   └── 更新 MEMORY.md 索引
+   │
+   ▼
+4. 读取与使用
+   │
+   ├── 会话启动时加载 MEMORY.md
+   ├── 按需读取具体记忆文件
+   └── 注入到系统提示词中
+```
+
+## 记忆读写
+
+### 保存记忆
+
+```typescript
+async function saveMemory(params: {
+  type: MemoryType
+  name: string
+  description: string
+  content: string
+}) {
+  const filename = `${params.type}_${slugify(params.name)}.md`
+  const filepath = path.join(MEMORY_DIR, filename)
+  
+  const fileContent = `---
+name: ${params.name}
+description: ${params.description}
+type: ${params.type}
+---
+
+${params.content}
+`
+  await writeFile(filepath, fileContent)
+  await updateMemoryIndex()
+}
+```
+
+### 读取记忆
+
+```typescript
+async function loadMemory(): Promise<string> {
+  const indexPath = path.join(MEMORY_DIR, 'MEMORY.md')
+  
+  if (!await exists(indexPath)) return ''
+  
+  const index = await readFile(indexPath)
+  
+  // 只加载索引到上下文
+  // 具体记忆文件按需读取
+  return index
+}
+```
+
+### 更新记忆
+
+```typescript
+async function updateMemory(name: string, content: string) {
+  const filename = findMemoryFile(name)
+  if (!filename) {
+    // 记忆不存在，创建新的
+    return saveMemory({ type: 'user', name, description: '', content })
+  }
+  
+  // 更新现有记忆
+  const filepath = path.join(MEMORY_DIR, filename)
+  await writeFile(filepath, content)
+}
+```
+
+## 记忆注入上下文
+
+```typescript
+// 在构建系统提示词时注入记忆
+async function buildSystemPrompt(options: ContextOptions) {
+  const parts = []
+  
+  // ... 其他部分
+  
+  // 注入记忆
+  const memory = await loadMemory()
+  if (memory) {
+    parts.push(`<memory>\n${memory}\n</memory>`)
+  }
+  
+  return parts.join('\n\n')
+}
+```
+
+## 记忆修剪
+
+长期不用的记忆会被自动修剪：
+
+```typescript
+// 记忆修剪策略
+async function pruneStaleMemories() {
+  const memories = await listAllMemories()
+  
+  for (const memory of memories) {
+    // 检查记忆是否过期
+    if (isStale(memory)) {
+      // 不自动删除，标记为可能过时
+      await markAsStale(memory)
+    }
+  }
+}
+```
+
+### 过时判断
+
+- 项目记忆：3 个月未更新
+- 反馈记忆：6 个月未引用
+- 用户记忆：永不过时
+- 参考记忆：3 个月未更新
+
+## 与 extractMemories 的关系
+
+`extractMemories` 服务从对话中自动提取值得记住的信息：
+
+```typescript
+// services/extractMemories/
+async function extractMemories(conversation: Message[]) {
+  // 分析对话，识别值得保存的信息
+  const candidates = await analyzeConversation(conversation)
+  
+  for (const candidate of candidates) {
+    if (candidate.confidence > CONFIDENCE_THRESHOLD) {
+      await saveMemory(candidate)
+    }
+  }
+}
+```
+
+## 最佳实践
+
+1. **简洁记忆**：每条记忆控制在 200 字以内
+2. **包含原因**：feedback 和 project 类型必须说明 "Why"
+3. **定期清理**：删除过时或不再相关的记忆
+4. **避免重复**：保存前检查是否已有类似记忆
+5. **不要存代码**：代码在仓库中，记忆只存上下文和决策

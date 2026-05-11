@@ -1,0 +1,233 @@
+# MCP 工具
+
+## 概述
+
+MCP (Model Context Protocol) 工具是 Claude Code 的扩展性核心。通过 MCP 协议，Claude Code 可以连接外部工具服务器，动态发现和使用新工具。
+
+## MCPTool
+
+MCPTool 是一个通用适配器，将 MCP 工具协议映射为内部 Tool 接口。
+
+### 目录结构
+
+```
+tools/MCPTool/
+├── MCPTool.ts             # 工具主类
+└── test/                  # 测试
+```
+
+### 核心原理
+
+```
+MCP 服务器                    Claude Code
+┌──────────┐    tools/list    ┌──────────┐
+│ MCP      │ ──────────────→ │ MCPTool   │
+│ Server   │                  │ 适配器    │
+│          │ ←────────────── │           │
+│          │    tools/call    │           │
+└──────────┘                  └──────────┘
+     ↑                              ↑
+     │                              │
+  外部工具                       Tool 接口
+```
+
+### 输入 Schema
+
+MCPTool 的输入 Schema 是动态的，根据 MCP 服务器提供的 `tools/list` 响应生成：
+
+```typescript
+// 动态 Schema 生成
+function createMCPToolSchema(mcpToolDef: MCPToolDefinition): z.ZodType {
+  return jsonSchemaToZod(mcpToolDef.inputSchema)
+}
+```
+
+### 执行流程
+
+```typescript
+async execute(input: unknown, context: ToolUseContext) {
+  // 1. 权限检查
+  const allowed = await context.canUseTool(this.name, input)
+  if (!allowed) return { error: 'Permission denied' }
+  
+  // 2. 通过 MCP 协议调用工具
+  const result = await this.mcpClient.callTool({
+    name: this.mcpToolName,
+    arguments: input,
+  })
+  
+  // 3. 转换结果格式
+  return {
+    type: 'tool_result',
+    tool_use_id: context.toolUseId,
+    content: result.content,
+  }
+}
+```
+
+## MCP 连接管理
+
+### 连接类型
+
+| Transport | 说明 | 启动方式 | 场景 |
+|-----------|------|----------|------|
+| stdio | 标准输入输出 | 启动子进程 | 本地工具 |
+| SSE | Server-Sent Events | HTTP 连接 | 远程服务 |
+
+### 连接生命周期
+
+```
+1. 读取配置
+   └── .claude/mcp-configs/*.json
+
+2. 启动/连接
+   ├── stdio: spawn 子进程
+   └── SSE: HTTP 连接
+
+3. 发现工具
+   └── tools/list → 注册 MCPTool 实例
+
+4. 工具调用
+   └── tools/call → 执行并返回结果
+
+5. 资源访问
+   └── resources/read → 读取资源
+
+6. 关闭连接
+   ├── 进程终止
+   └── 清理注册的工具
+```
+
+## 配置格式
+
+### MCP 服务器配置
+
+```json
+// .claude/mcp-configs/my-tools.json
+{
+  "mcpServers": {
+    "my-database": {
+      "command": "node",
+      "args": ["./mcp-db-server.js"],
+      "env": {
+        "DB_URL": "postgresql://localhost/mydb"
+      }
+    },
+    "my-api": {
+      "url": "https://api.example.com/mcp",
+      "transport": "sse",
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+### 配置字段
+
+| 字段 | 说明 | 必需 |
+|------|------|------|
+| `command` | stdio 模式的启动命令 | stdio 模式必需 |
+| `args` | 命令参数 | 否 |
+| `env` | 环境变量 | 否 |
+| `url` | SSE 模式的端点 URL | SSE 模式必需 |
+| `transport` | 传输类型 (stdio/sse) | 否（自动推断） |
+| `headers` | HTTP 请求头 | 否 |
+
+## ListMcpResourcesTool
+
+列出 MCP 服务器提供的资源。
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({})
+```
+
+### 返回格式
+
+```typescript
+{
+  resources: [
+    {
+      uri: "file:///path/to/resource",
+      name: "Project Config",
+      description: "Project configuration file",
+      mimeType: "application/json",
+    }
+  ]
+}
+```
+
+## ReadMcpResourceTool
+
+读取 MCP 服务器的资源。
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  uri: z.string().describe('资源 URI'),
+})
+```
+
+## McpAuthTool
+
+管理 MCP 服务器的认证。
+
+### 目录结构
+
+```
+tools/McpAuthTool/
+├── McpAuthTool.ts         # 工具主类
+└── test/                  # 测试
+```
+
+### 认证流程
+
+```
+1. MCP 服务器返回 401
+2. McpAuthTool 触发认证流程
+3. OAuth → 打开浏览器授权
+4. API Key → 提示输入
+5. 存储凭据
+6. 重试请求
+```
+
+## 工具合并
+
+MCP 工具与内置工具的合并发生在 `useMergedTools` Hook 中：
+
+```typescript
+// hooks/useMergedTools.ts（简化）
+function useMergedTools() {
+  const builtInTools = useBuiltInTools()
+  const mcpTools = useMcpTools()
+  const pluginTools = usePluginTools()
+  
+  return useMemo(() => [
+    ...builtInTools,
+    ...mcpTools,
+    ...pluginTools,
+  ], [builtInTools, mcpTools, pluginTools])
+}
+```
+
+### 工具名冲突
+
+当 MCP 工具与内置工具同名时的处理策略：
+
+```
+1. 内置工具优先
+2. MCP 工具添加前缀 (server_name.tool_name)
+3. 日志记录冲突信息
+```
+
+## 最佳实践
+
+1. **最小权限**：MCP 服务器只暴露必要的工具
+2. **超时设置**：为耗时操作设置合理的超时
+3. **错误处理**：工具调用失败时返回有意义的错误信息
+4. **资源清理**：连接关闭时清理所有资源
+5. **安全性**：不在配置中硬编码密钥，使用环境变量

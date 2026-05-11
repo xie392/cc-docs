@@ -1,0 +1,209 @@
+# 搜索工具
+
+## 概述
+
+搜索工具集提供了文件名搜索、内容搜索、工具搜索和 LSP 代码智能搜索能力，是 AI 定位代码的关键手段。
+
+## GlobTool
+
+按文件名模式匹配搜索文件。
+
+### 目录结构
+
+```
+tools/GlobTool/
+├── GlobTool.ts            # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  pattern: z.string().describe('Glob 匹配模式'),
+  path: z.string().optional().describe('搜索根目录'),
+})
+```
+
+### 支持的模式
+
+```
+**/*.ts              → 递归匹配所有 .ts 文件
+src/**/*.test.ts     → src 目录下所有测试文件
+*.json               → 根目录 JSON 文件
+**/README.md         → 所有 README 文件
+```
+
+### 实现细节
+
+- 基于 `fast-glob` 库实现
+- 自动忽略 `node_modules/`、`.git/` 等目录
+- 结果按修改时间排序
+- 返回匹配的文件路径列表
+
+## GrepTool
+
+按文件内容正则搜索，是最常用的代码搜索工具。
+
+### 目录结构
+
+```
+tools/GrepTool/
+├── GrepTool.ts            # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  pattern: z.string().describe('正则表达式模式'),
+  path: z.string().optional().describe('搜索目录'),
+  glob: z.string().optional().describe('文件过滤模式'),
+  output_mode: z.enum([
+    'files_with_matches',
+    'content',
+    'count',
+  ]).optional().default('files_with_matches'),
+  '-i': z.boolean().optional().describe('忽略大小写'),
+  '-n': z.boolean().optional().default(true).describe('显示行号'),
+  '-A': z.number().optional().describe('匹配后显示行数'),
+  '-B': z.number().optional().describe('匹配前显示行数'),
+  '-C': z.number().optional().describe('匹配上下文行数'),
+  head_limit: z.number().optional().describe('限制输出数量'),
+})
+```
+
+### 输出模式
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| `files_with_matches` | 仅返回文件路径 | 快速定位文件 |
+| `content` | 返回匹配行及上下文 | 查看具体代码 |
+| `count` | 返回每个文件的匹配数 | 评估影响范围 |
+
+### 实现细节
+
+- 基于 `ripgrep` (rg) 实现，速度极快
+- 支持完整的正则表达式语法
+- 自动忽略 `.gitignore` 中的文件
+- 支持文件类型过滤（通过 glob 参数）
+- 只读工具，无需权限确认
+
+### 常见用法
+
+```typescript
+// 查找函数定义
+{ pattern: "function getUserById", output_mode: "content" }
+
+// 查找所有 TODO
+{ pattern: "TODO|FIXME", output_mode: "content", "-i": true }
+
+// 统计某个 API 的使用次数
+{ pattern: "useState", output_mode: "count", glob: "*.tsx" }
+
+// 查找接口实现
+{ pattern: "implements IUserService", output_mode: "files_with_matches" }
+```
+
+## ToolSearchTool
+
+搜索当前可用的工具，帮助 AI 在不确定工具名时找到合适的工具。
+
+### 目录结构
+
+```
+tools/ToolSearchTool/
+├── ToolSearchTool.ts      # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  query: z.string().describe('搜索查询'),
+})
+```
+
+### 搜索逻辑
+
+```typescript
+async execute(input: { query: string }) {
+  const tools = getAllRegisteredTools()
+  
+  // 模糊匹配工具名称和描述
+  const results = tools
+    .map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      score: fuzzyMatch(input.query, tool.name + ' ' + tool.description),
+    }))
+    .filter(r => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+  
+  return results
+}
+```
+
+这个工具特别有价值，因为 Claude Code 有 40+ 内置工具 + MCP 工具，AI 不可能记住所有工具的名称和用途。
+
+## LSPTool
+
+利用 Language Server Protocol 提供代码智能搜索。
+
+### 目录结构
+
+```
+tools/LSPTool/
+├── LSPTool.ts             # 工具主类
+└── test/                  # 测试
+```
+
+### 支持的操作
+
+| 操作 | 说明 |
+|------|------|
+| `goto_definition` | 跳转到符号定义 |
+| `find_references` | 查找所有引用 |
+| `hover` | 获取类型信息和文档 |
+| `diagnostics` | 获取诊断信息 |
+| `workspace_symbols` | 工作区符号搜索 |
+| `rename` | 重命名符号 |
+| `code_actions` | 获取代码操作 |
+
+### LSP 连接
+
+LSPTool 需要与语言服务器通信：
+
+```typescript
+// LSP 连接方式
+1. IDE 桥接模式：通过 Bridge 连接 IDE 的语言服务器
+2. 独立模式：自行启动语言服务器进程
+```
+
+### 与 IDE 的协作
+
+在 IDE 集成模式下，LSPTool 优先使用 IDE 已启动的语言服务器，避免重复启动和索引。
+
+## 搜索策略
+
+AI 在实际使用中会根据不同场景选择不同的搜索工具：
+
+```
+已知文件名     → GlobTool   (精确匹配)
+已知代码片段   → GrepTool   (内容搜索)
+不确定工具名   → ToolSearchTool (工具发现)
+需要类型信息   → LSPTool    (代码智能)
+需要定义跳转   → LSPTool    (goto definition)
+需要引用查找   → LSPTool    (find references)
+```
+
+### 典型搜索流程
+
+```
+1. GlobTool("src/**/*.ts")         → 找到相关文件
+2. GrepTool("class UserService")   → 定位到具体类
+3. LSPTool("find_references")      → 找到所有使用位置
+4. FileReadTool(...)               → 读取代码内容
+```

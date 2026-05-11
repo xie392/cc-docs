@@ -1,0 +1,260 @@
+# Team 多 Agent 协作
+
+## 概述
+
+Team 系统允许多个 Agent 组成团队并行工作，通过共享任务列表和消息通信实现协作。
+
+## Team 架构
+
+```
+Team Lead (主 Agent)
+  ├── Agent A (researcher)   ← 独立进程
+  │   ├── 独立对话上下文
+  │   ├── 独立工具集
+  │   └── 独立工作目录
+  ├── Agent B (coder)        ← 独立进程
+  │   ├── 独立对话上下文
+  │   ├── 独立工具集
+  │   └── 独立工作目录
+  └── Agent C (tester)       ← 独立进程
+      ├── 独立对话上下文
+      ├── 独立工具集
+      └── 独立工作目录
+
+共享资源:
+  ├── 任务列表 (~/.claude/tasks/{team-name}/)
+  ├── Team 配置 (~/.claude/teams/{team-name}/)
+  └── 文件系统 (同一工作目录)
+```
+
+## 创建 Team
+
+### 使用 TeamCreateTool
+
+```typescript
+await TeamCreate({
+  team_name: "feature-team",
+  description: "Building feature X"
+})
+```
+
+### 生成资源
+
+创建 Team 后自动生成：
+
+```
+~/.claude/teams/feature-team/
+└── config.json              # Team 配置
+
+~/.claude/tasks/feature-team/
+└── (任务文件)
+```
+
+### config.json 结构
+
+```json
+{
+  "team_name": "feature-team",
+  "description": "Building feature X",
+  "created_at": "2024-01-01T00:00:00Z",
+  "members": [
+    {
+      "name": "team-lead",
+      "agentId": "agent-001",
+      "agentType": "lead"
+    },
+    {
+      "name": "researcher",
+      "agentId": "agent-002",
+      "agentType": "general"
+    }
+  ]
+}
+```
+
+## 启动队友
+
+### Agent 启动
+
+```typescript
+// 启动一个 Agent 作为队友
+spawnAgent({
+  name: "researcher",         // 队友名称
+  team_name: "feature-team",  // 所属 Team
+  subagent_type: "general",   // Agent 类型
+})
+```
+
+### 队友生命周期
+
+```
+1. 启动 → 空闲状态
+2. 接收消息 → 唤醒执行
+3. 完成任务 → 标记完成
+4. 空闲 → 等待下一条消息
+5. 收到 shutdown → 终止
+```
+
+## 任务协调
+
+### 创建任务
+
+```typescript
+TaskCreate({ subject: "Research API design", description: "..." })
+TaskCreate({ subject: "Implement frontend", description: "..." })
+TaskCreate({ subject: "Write tests", description: "..." })
+```
+
+### 设置依赖
+
+```typescript
+// 测试任务依赖实现任务
+TaskUpdate({ taskId: "3", addBlockedBy: ["2"] })
+```
+
+### 分配任务
+
+```typescript
+TaskUpdate({ taskId: "1", owner: "researcher" })
+TaskUpdate({ taskId: "2", owner: "coder" })
+```
+
+### 任务流转
+
+```
+1. Team Lead 创建所有任务
+2. 设置任务依赖关系
+3. 分配或让 Agent 自行认领
+4. Agent 完成任务后标记 completed
+5. 自动解除下游任务的阻塞
+6. 重复直到所有任务完成
+```
+
+## Agent 间通信
+
+### SendMessage
+
+```typescript
+// 点对点
+SendMessage({ 
+  to: "researcher", 
+  message: "请开始 API 设计研究" 
+})
+
+// 广播
+SendMessage({ 
+  to: "*", 
+  message: "代码风格指南已更新" 
+})
+```
+
+### 消息投递
+
+```
+发送方 → 消息队列 → 接收方
+
+- 消息自动投递，无需轮询
+- Agent 空闲时立即处理
+- Agent 忙碌时消息排队
+- 每次只处理一条消息
+```
+
+### 通信协议
+
+```typescript
+// 普通消息
+SendMessage({ to: "researcher", message: "Start on task #1" })
+
+// 结构化消息（关闭请求）
+SendMessage({ 
+  to: "team-lead", 
+  message: { 
+    type: "shutdown_response", 
+    request_id: "req-1", 
+    approve: true 
+  }
+})
+```
+
+## 共享状态
+
+### Team 配置
+
+```
+~/.claude/teams/{team-name}/config.json
+```
+
+包含成员列表、Team 描述等。所有 Agent 可读取。
+
+### 任务列表
+
+```
+~/.claude/tasks/{team-name}/
+```
+
+任务文件存储，所有 Agent 可读写。使用文件锁避免并发冲突。
+
+### 工作目录
+
+所有 Agent 共享同一工作目录，可直接读写同一项目文件。
+
+## Team 关闭
+
+### 优雅关闭
+
+```typescript
+// 1. 通知所有队友关闭
+SendMessage({ to: "*", message: { type: "shutdown_request" } })
+
+// 2. 等待队友确认
+// 3. 清理 Team 资源
+TeamDelete()
+```
+
+### 强制关闭
+
+如果队友无响应，可以强制关闭：
+
+```typescript
+// TeamDelete 会检查是否还有活跃成员
+// 如果所有成员已关闭，允许删除
+TeamDelete()
+```
+
+## 完整工作流示例
+
+```
+1. Team Lead 创建 Team
+   TeamCreate({ team_name: "auth-feature" })
+
+2. 创建任务
+   TaskCreate({ subject: "Research auth patterns" })
+   TaskCreate({ subject: "Implement JWT auth" })
+   TaskCreate({ subject: "Write auth tests" })
+   TaskUpdate({ taskId: "3", addBlockedBy: ["2"] })
+
+3. 启动队友
+   spawnAgent({ name: "researcher", team_name: "auth-feature" })
+   spawnAgent({ name: "coder", team_name: "auth-feature" })
+   spawnAgent({ name: "tester", team_name: "auth-feature" })
+
+4. 分配初始任务
+   SendMessage({ to: "researcher", message: "开始任务 #1" })
+
+5. 队友自行协调
+   - researcher 完成后标记任务
+   - coder 认领下一个可用任务
+   - tester 等待阻塞解除
+
+6. 完成后关闭
+   SendMessage({ to: "*", message: { type: "shutdown_request" } })
+   TeamDelete()
+```
+
+## 注意事项
+
+1. **文件冲突**：多 Agent 同时编辑同一文件可能产生冲突
+2. **资源竞争**：共享工具（如 API 调用）可能遇到速率限制
+3. **通信延迟**：Agent 间通信有延迟，不适合实时协调
+4. **状态一致**：Agent 对项目状态的视图可能不同步
+5. **成本**：多个 Agent 并行运行会增加 API 调用量

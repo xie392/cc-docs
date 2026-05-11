@@ -1,0 +1,326 @@
+# React Hooks
+
+## 概述
+
+Claude Code 使用 Ink (React for CLI) 构建 UI，70+ 自定义 Hook 管理组件逻辑和副作用。
+
+## 核心交互 Hooks
+
+### useTextInput
+
+管理文本输入的状态和事件处理。
+
+```typescript
+// hooks/useTextInput.ts
+function useTextInput(options?: {
+  onSubmit?: (text: string) => void
+  onChange?: (text: string) => void
+  placeholder?: string
+}) {
+  const [value, setValue] = useState('')
+  const [history, setHistory] = useState<string[]>([])
+  const historyIndex = useRef(-1)
+  
+  return {
+    value,
+    onChange: setValue,
+    onSubmit: handleSubmit,
+    onKeyDown: handleKeyDown,  // 历史记录导航
+    clear: () => setValue(''),
+  }
+}
+```
+
+### useVimInput
+
+Vim 模式的输入处理。
+
+```typescript
+// hooks/useVimInput.ts
+function useVimInput() {
+  const [mode, setMode] = useState<'insert' | 'normal'>('insert')
+  
+  // Vim 模式切换
+  // - Esc: insert → normal
+  // - i/a/o: normal → insert
+  // - hjkl: normal 模式移动
+  
+  return { mode, bindings: vimKeyBindings }
+}
+```
+
+### usePasteHandler
+
+处理终端粘贴事件，支持多行文本和图片。
+
+```typescript
+// hooks/usePasteHandler.ts
+function usePasteHandler() {
+  const onPaste = useCallback(async (event: PasteEvent) => {
+    // 检测是否为图片
+    if (event.isImage) {
+      const filePath = await saveTempImage(event.imageData)
+      return { type: 'image', filePath }
+    }
+    // 处理多行文本
+    return { type: 'text', content: event.text }
+  }, [])
+  
+  return { onPaste }
+}
+```
+
+## 工具相关 Hooks
+
+### useCanUseTool
+
+工具权限判断的核心 Hook。
+
+```typescript
+// hooks/useCanUseTool.ts
+function useCanUseTool() {
+  const { permissionMode } = useAppState()
+  const confirmedTools = useRef(new Map<string, PermissionDecision>())
+  
+  const canUseTool = useCallback(
+    async (toolName: string, input: unknown): Promise<PermissionDecision> => {
+      // 1. 检查权限模式
+      if (permissionMode === 'auto-accept') return 'allow'
+      
+      // 2. 检查历史确认
+      const previous = confirmedTools.current.get(toolName)
+      if (previous === 'allow_session') return 'allow'
+      
+      // 3. 检查工具是否只读
+      if (isReadOnlyTool(toolName)) return 'allow'
+      
+      // 4. 请求用户确认
+      return requestUserPermission(toolName, input)
+    },
+    [permissionMode]
+  )
+  
+  return canUseTool
+}
+```
+
+### useMergedTools
+
+合并内置工具、MCP 工具和插件工具。
+
+```typescript
+// hooks/useMergedTools.ts
+function useMergedTools() {
+  const builtInTools = useBuiltInTools()
+  const mcpTools = useMcpTools()
+  const pluginTools = usePluginTools()
+  
+  return useMemo(() => [
+    ...builtInTools,
+    ...mcpTools,
+    ...pluginTools,
+  ], [builtInTools, mcpTools, pluginTools])
+}
+```
+
+### useMergedCommands
+
+合并内置命令和插件命令。
+
+```typescript
+// hooks/useMergedCommands.ts
+function useMergedCommands() {
+  const builtInCommands = useBuiltInCommands()
+  const pluginCommands = usePluginCommands()
+  
+  return useMemo(() => ({
+    ...builtInCommands,
+    ...pluginCommands,
+  }), [builtInCommands, pluginCommands])
+}
+```
+
+## 任务/Agent Hooks
+
+### useTasksV2
+
+任务系统 V2 的核心 Hook。
+
+```typescript
+// hooks/useTasksV2.ts
+function useTasksV2() {
+  const [tasks, setTasks] = useState<Task[]>([])
+  
+  const createTask = useCallback((params: CreateTaskParams) => {
+    const task: Task = {
+      id: generateId(),
+      ...params,
+      status: 'pending',
+    }
+    setTasks(prev => [...prev, task])
+    return task
+  }, [])
+  
+  const updateTask = useCallback((id: string, updates: Partial<Task>) => {
+    setTasks(prev => prev.map(t => 
+      t.id === id ? { ...t, ...updates } : t
+    ))
+  }, [])
+  
+  return { tasks, createTask, updateTask }
+}
+```
+
+### useSwarmInitialization
+
+Swarm 模式的初始化 Hook。
+
+```typescript
+// hooks/useSwarmInitialization.ts
+function useSwarmInitialization() {
+  const [initialized, setInitialized] = useState(false)
+  
+  useEffect(() => {
+    async function init() {
+      // 加载 Team 配置
+      // 连接队友 Agent
+      // 同步任务列表
+      setInitialized(true)
+    }
+    init()
+  }, [])
+  
+  return { initialized }
+}
+```
+
+## IDE/桥接 Hooks
+
+### useIdeConnectionStatus
+
+监控与 IDE 的连接状态。
+
+```typescript
+// hooks/useIdeConnectionStatus.ts
+function useIdeConnectionStatus() {
+  const [status, setStatus] = useState<'connected' | 'disconnected'>('disconnected')
+  
+  useEffect(() => {
+    const bridge = getReplBridge()
+    bridge.on('connect', () => setStatus('connected'))
+    bridge.on('disconnect', () => setStatus('disconnected'))
+    return () => bridge.removeAllListeners()
+  }, [])
+  
+  return status
+}
+```
+
+### useIdeSelection
+
+获取 IDE 中选中的代码。
+
+```typescript
+// hooks/useIdeSelection.ts
+function useIdeSelection() {
+  const [selection, setSelection] = useState<Selection | null>(null)
+  
+  useEffect(() => {
+    const bridge = getReplBridge()
+    bridge.on('selectionChanged', setSelection)
+    return () => bridge.off('selectionChanged', setSelection)
+  }, [])
+  
+  return selection
+}
+```
+
+## UI/渲染 Hooks
+
+### useVirtualScroll
+
+虚拟滚动，处理大量消息的高效渲染。
+
+```typescript
+// hooks/useVirtualScroll.ts
+function useVirtualScroll(items: unknown[], itemHeight: number) {
+  const containerRef = useRef<HTMLElement>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [containerHeight, setContainerHeight] = useState(0)
+  
+  const startIndex = Math.floor(scrollTop / itemHeight)
+  const endIndex = Math.min(
+    startIndex + Math.ceil(containerHeight / itemHeight) + 1,
+    items.length
+  )
+  const visibleItems = items.slice(startIndex, endIndex)
+  
+  return {
+    containerRef,
+    visibleItems,
+    startIndex,
+    onScroll: (e) => setScrollTop(e.scrollTop),
+  }
+}
+```
+
+### useTerminalSize
+
+获取终端尺寸，响应式更新。
+
+```typescript
+// hooks/useTerminalSize.ts
+function useTerminalSize() {
+  const { stdout } = useStdout()  // Ink 的 stdout
+  
+  return {
+    width: stdout.columns,
+    height: stdout.rows,
+  }
+}
+```
+
+## 设计模式
+
+### 状态聚合模式
+
+将多个来源的状态聚合成统一的接口：
+
+```typescript
+function useMergedTools() {
+  const builtIn = useBuiltInTools()
+  const mcp = useMcpTools()
+  const plugins = usePluginTools()
+  
+  return useMemo(() => [...builtIn, ...mcp, ...plugins], [builtIn, mcp, plugins])
+}
+```
+
+### 轮询模式
+
+定期检查外部状态变化：
+
+```typescript
+function useInboxPoller() {
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const messages = await fetchInbox()
+      if (messages.length > 0) setMessages(messages)
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [])
+}
+```
+
+### 事件监听模式
+
+监听配置和状态变更：
+
+```typescript
+function useSettingsChange(callback: (settings: Settings) => void) {
+  useEffect(() => {
+    const watcher = watchSettings(callback)
+    return () => watcher.close()
+  }, [callback])
+}
+```

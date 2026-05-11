@@ -1,0 +1,194 @@
+# 上下文压缩
+
+## 概述
+
+Compact 服务负责在对话过长时压缩上下文，确保对话不会超出模型的 token 限制。
+
+## 触发条件
+
+```typescript
+// 压缩触发条件
+const COMPACTION_THRESHOLD = 0.8  // 使用量达到 80% 时触发
+
+function shouldCompact(messages: Message[]): boolean {
+  const tokenCount = estimateTokens(messages)
+  const maxTokens = getModelContextWindow()
+  return tokenCount >= maxTokens * COMPACTION_THRESHOLD
+}
+```
+
+### 触发方式
+
+| 方式 | 说明 |
+|------|------|
+| 自动触发 | token 使用量超过阈值 |
+| 手动触发 | 用户输入 `/compact` 命令 |
+| API 错误 | 收到 `max_context_window_exceeded` 错误时 |
+
+## 压缩流程
+
+```
+1. 计算当前 token 使用量
+   │
+   ▼
+2. 选择压缩策略
+   │
+   ├── 轻度压缩: 移除冗余内容
+   ├── 中度压缩: 摘要早期消息
+   └── 重度压缩: 大幅裁剪上下文
+   │
+   ▼
+3. 执行压缩
+   │
+   ├── 保留最近 N 条消息
+   ├── 摘要早期消息
+   ├── 保留关键工具调用结果
+   └── 保留用户指令
+   │
+   ▼
+4. 构建新的消息列表
+   │
+   ▼
+5. 验证压缩后的 token 数
+```
+
+## 压缩策略
+
+### 保留策略
+
+| 保留 | 丢弃 |
+|------|------|
+| 最近 10 条消息 | 早期对话文本 |
+| 工具调用的关键结果 | 重复的搜索结果 |
+| 错误信息和栈追踪 | 中间推理过程 |
+| 用户的明确指令 | 大段代码输出 |
+| 未解决的工具调用 | 已确认的权限对话 |
+
+### 摘要生成
+
+```typescript
+async function summarizeMessages(
+  messages: Message[]
+): Promise<string> {
+  // 使用 AI 生成对话摘要
+  const summary = await callAPI({
+    messages: [
+      { role: 'user', content: '请摘要以下对话的关键信息：' },
+      ...messages,
+    ],
+    maxTokens: 1000,
+    model: 'claude-haiku-4-5',  // 用快速模型生成摘要
+  })
+  
+  return summary
+}
+```
+
+### 重要信息提取
+
+```typescript
+function extractImportantToolResults(
+  messages: Message[]
+): ToolResult[] {
+  return messages
+    .flatMap(m => m.content)
+    .filter(block => block.type === 'tool_result')
+    .filter(result => {
+      // 保留包含错误的工具结果
+      if (result.is_error) return true
+      // 保留文件写入/编辑结果
+      if (isFileModificationResult(result)) return true
+      // 保留关键的搜索结果
+      if (isKeySearchResult(result)) return true
+      return false
+    })
+}
+```
+
+## 压缩级别
+
+### 轻度压缩
+
+仅移除明确的冗余内容：
+- 重复的权限确认对话
+- 已处理完的工具调用中间结果
+- 大段空白或格式化文本
+
+### 中度压缩
+
+摘要早期消息，保留关键结果：
+- 最近 10 条消息完整保留
+- 早期消息替换为摘要
+- 工具调用结果选择性保留
+
+### 重度压缩
+
+大幅裁剪，仅保留核心上下文：
+- 最近 5 条消息完整保留
+- 所有早期消息替换为简短摘要
+- 仅保留错误和关键结果
+
+## 自动压缩
+
+```typescript
+// 自动压缩配置
+interface CompactConfig {
+  enabled: boolean          // 是否启用自动压缩
+  threshold: number         // 触发阈值 (0-1)
+  keepRecentCount: number   // 保留最近消息数
+  strategy: 'light' | 'medium' | 'heavy'
+}
+```
+
+### 压缩通知
+
+压缩发生时会通知用户：
+
+```
+[上下文压缩] 对话已压缩，保留了最近 10 条消息。
+早期对话已摘要，关键信息已保留。
+```
+
+## 与 Token 估算的关系
+
+```typescript
+// services/tokenEstimation.ts
+function estimateTokens(messages: Message[]): number {
+  let total = 0
+  for (const message of messages) {
+    for (const block of message.content) {
+      switch (block.type) {
+        case 'text':
+          total += estimateTextTokens(block.text)
+          break
+        case 'tool_use':
+          total += estimateTextTokens(JSON.stringify(block.input))
+          break
+        case 'tool_result':
+          total += estimateTextTokens(
+            typeof block.content === 'string' 
+              ? block.content 
+              : JSON.stringify(block.content)
+          )
+          break
+      }
+    }
+  }
+  return total
+}
+
+function estimateTextTokens(text: string): number {
+  // CJK 文本：约 1.5 字/token
+  // ASCII 文本：约 4 字符/token
+  const cjkCount = (text.match(/[一-鿿]/g) || []).length
+  const asciiCount = text.length - cjkCount
+  return Math.ceil(cjkCount / 1.5 + asciiCount / 4)
+}
+```
+
+## 最佳实践
+
+1. **及时压缩**：不要等到 API 报错才压缩
+2. **保留关键信息**：压缩后确保核心任务上下文不丢失
+3. **渐进压缩**：先轻度压缩，不够再中度
+4. **用户可感知**：压缩时通知用户，让用户了解上下文状态

@@ -1,0 +1,258 @@
+# Agent 协作工具
+
+## 概述
+
+Agent 协作工具集支持子 Agent 调用、Agent 间通信和 Team 管理，是 Claude Code 多 Agent 架构的基础。
+
+## AgentTool
+
+AgentTool 是子 Agent 调用机制，允许主 Agent 生成子 Agent 执行独立任务。
+
+### 目录结构
+
+```
+tools/AgentTool/
+├── AgentTool.ts           # 工具主类
+├── loadAgentsDir.ts       # Agent 定义加载
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  prompt: z.string().describe('给子 Agent 的任务描述'),
+  subagent_type: z.string().optional()
+    .describe('子 Agent 类型'),
+  name: z.string().optional()
+    .describe('子 Agent 名称'),
+})
+```
+
+### 工作流程
+
+```
+主 Agent 决定需要子任务
+    │
+    ▼
+调用 AgentTool
+    │
+    ├── 1. 选择 Agent 定义
+    │   ├── 从 .claude/agents/ 加载自定义 Agent
+    │   └── 使用默认 Agent 配置
+    │
+    ├── 2. 创建子对话上下文
+    │   ├── 新的消息历史
+    │   ├── 继承部分工具集
+    │   └── 独立的 System Prompt
+    │
+    ├── 3. 执行独立对话循环
+    │   ├── 子 Agent 独立推理
+    │   ├── 子 Agent 独立调用工具
+    │   └── 结果自动汇总
+    │
+    └── 4. 返回结果摘要
+        ├── 子 Agent 的关键发现
+        ├── 执行的工具列表
+        └── 最终结论
+```
+
+### Agent 定义文件
+
+在 `.claude/agents/` 目录下创建 Markdown 文件定义自定义 Agent：
+
+```markdown
+<!-- .claude/agents/code-reviewer.md -->
+---
+name: code-reviewer
+description: Review code for quality, security, and maintainability
+tools:
+  - FileReadTool
+  - GrepTool
+  - GlobTool
+  - BashTool
+model: claude-sonnet-4-6
+---
+
+You are a code reviewer. Analyze the provided code for:
+1. Security vulnerabilities
+2. Performance issues
+3. Code style violations
+4. Missing error handling
+
+Provide actionable feedback with specific line references.
+```
+
+### 工具继承
+
+子 Agent 可以使用主 Agent 工具集的子集：
+
+```typescript
+// 工具过滤逻辑
+function getSubAgentTools(
+  agentDef: AgentDefinition,
+  parentTools: Tool[]
+): Tool[] {
+  if (!agentDef.tools) return parentTools  // 继承全部
+  
+  return parentTools.filter(tool => 
+    agentDef.tools!.includes(tool.name)
+  )
+}
+```
+
+## SendMessageTool
+
+Agent 间的消息传递工具，用于 Team 模式下的协作通信。
+
+### 目录结构
+
+```
+tools/SendMessageTool/
+├── SendMessageTool.ts     # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  to: z.string().describe('接收方: 队友名称或 "*" 广播'),
+  message: z.string().describe('消息内容'),
+  summary: z.string().optional()
+    .describe('消息摘要（5-10个字）'),
+})
+```
+
+### 通信模式
+
+```
+点对点通信:
+  Agent A → SendMessage → Agent B
+
+广播通信:
+  Team Lead → SendMessage("*") → 所有队友
+```
+
+### 消息投递
+
+```typescript
+// 消息投递机制
+async function deliverMessage(msg: Message) {
+  if (msg.to === '*') {
+    // 广播：投递给所有队友
+    for (const teammate of team.members) {
+      await teammate.inbox.push(msg)
+    }
+  } else {
+    // 点对点：投递给指定队友
+    const teammate = findTeammate(msg.to)
+    await teammate.inbox.push(msg)
+  }
+}
+```
+
+## TeamCreateTool / TeamDeleteTool
+
+Team 生命周期管理工具。
+
+### TeamCreateTool
+
+创建一个新的 Agent 团队：
+
+```typescript
+const inputSchema = z.object({
+  team_name: z.string().describe('团队名称'),
+  description: z.string().optional().describe('团队描述'),
+})
+```
+
+创建后会：
+1. 生成 `~/.claude/teams/{team-name}/config.json`
+2. 创建任务目录 `~/.claude/tasks/{team-name}/`
+3. 初始化任务列表
+
+### TeamDeleteTool
+
+删除团队及其资源：
+
+```typescript
+const inputSchema = z.object({})
+// 自动从当前会话上下文获取团队名称
+```
+
+删除前会检查：
+- 所有队友是否已关闭
+- 是否有未完成的任务
+- 确认后清理文件
+
+## EnterWorktreeTool / ExitWorktreeTool
+
+Worktree 隔离工具，让 Agent 在独立的 Git Worktree 中工作。
+
+### EnterWorktreeTool
+
+```typescript
+const inputSchema = z.object({
+  name: z.string().optional().describe('Worktree 名称'),
+  path: z.string().optional().describe('已有 Worktree 路径'),
+})
+```
+
+### 工作流程
+
+```
+1. 创建 Git Worktree
+   ├── 在 .claude/worktrees/ 下创建新目录
+   ├── 基于当前 HEAD 创建新分支
+   └── 切换工作目录
+
+2. 在 Worktree 中工作
+   ├── 独立的文件系统视图
+   ├── 独立的 Git 状态
+   └── 不影响主工作区
+
+3. 退出 Worktree
+   ├── 选择保留或删除
+   └── 切换回原始目录
+```
+
+## 协作模式
+
+### 父子模式 (AgentTool)
+
+```
+主 Agent (parent)
+  └── 子 Agent (child)
+      ├── 共享文件系统
+      ├── 独立对话上下文
+      └── 返回结果摘要
+```
+
+适用场景：独立的子任务，如代码审查、测试运行
+
+### 团队模式 (Team)
+
+```
+Team Lead
+  ├── Agent A (researcher)
+  ├── Agent B (coder)
+  └── Agent C (tester)
+      ├── 共享任务列表
+      ├── 消息通信
+      └── 独立工作目录
+```
+
+适用场景：复杂项目，需要并行工作
+
+### Worktree 模式
+
+```
+主 Agent
+  └── Worktree Agent
+      ├── 独立 Git Worktree
+      ├── 不影响主分支
+      └── 完成后合并或删除
+```
+
+适用场景：实验性修改，避免影响主工作区

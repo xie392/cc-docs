@@ -1,0 +1,190 @@
+# 状态管理
+
+## 核心状态架构
+
+Claude Code 使用 React 组件树管理状态，核心是 `AppState`：
+
+```
+<App> (AppState Provider)
+  ├── <REPL> (主界面)
+  │   ├── <TextInput> (输入框)
+  │   ├── <MessageList> (消息列表)
+  │   └── <ToolOutput> (工具输出)
+  ├── <Dialog> (对话框)
+  └── <StatusBar> (状态栏)
+```
+
+## AppState
+
+AppState 是 Claude Code 的核心状态对象，存储在 React Context 中：
+
+```typescript
+// src/state/AppState.tsx 核心定义
+interface AppState {
+  // 对话状态
+  messages: Message[]
+  isProcessing: boolean
+  
+  // 工具状态
+  activeTools: Map<string, ToolExecution>
+  toolPermissions: Map<string, PermissionDecision>
+  
+  // UI 状态
+  mode: 'chat' | 'plan' | 'auto-accept'
+  showDiff: boolean
+  focusedMessageIndex: number
+  
+  // 会话信息
+  sessionId: string
+  conversationId: string
+  model: string
+  
+  // 功能开关
+  features: FeatureFlags
+}
+```
+
+### AppStateStore
+
+```typescript
+// src/state/AppStateStore.ts
+class AppStateStore {
+  private state: AppState
+  private listeners: Set<() => void>
+  
+  getState(): AppState
+  setState(partial: Partial<AppState>): void
+  subscribe(listener: () => void): () => void
+}
+```
+
+### 状态选择器
+
+```typescript
+// src/state/selectors.ts
+// 精确获取状态子集，避免不必要的重渲染
+const selectMessages = (state: AppState) => state.messages
+const selectIsProcessing = (state: AppState) => state.isProcessing
+const selectModel = (state: AppState) => state.model
+```
+
+## 持久化状态
+
+### 存储位置
+
+| 存储位置 | 内容 | 生命周期 |
+|----------|------|----------|
+| `~/.claude/` | 全局配置、认证、记忆 | 永久 |
+| `.claude/` | 项目配置、会话数据 | 项目级 |
+| `CLAUDE.md` | 项目指令 | 项目级 |
+| `MEMORY.md` | 持久化记忆 | 永久 |
+| `.claude/sessions/` | 会话历史 | 永久 |
+
+### 配置文件结构
+
+```
+~/.claude/
+├── settings.json          # 全局设置
+├── credentials            # 认证凭据
+├── memory/                # 持久化记忆
+├── sessions/              # 会话历史
+├── mcp-configs/           # MCP 服务器配置
+├── agents/                # 自定义 Agent
+├── skills/                # 技能定义
+├── plugins/               # 插件
+└── teams/                 # Team 配置
+```
+
+### 设置层级
+
+```
+用户设置 (~/.claude/settings.json)
+    │
+    ├── 项目设置 (.claude/settings.json)
+    │   └── 可覆盖用户设置
+    │
+    └── 企业策略 (.claude/policy.json)
+        └── 不可覆盖（安全策略）
+```
+
+## CLAUDE.md 系统
+
+CLAUDE.md 是项目级的 AI 指令文件，会在每次对话时自动加载：
+
+### 加载顺序
+
+```
+1. ~/.claude/CLAUDE.md       # 用户全局指令
+2. .claude/CLAUDE.md         # 项目根目录指令
+3. 子目录/CLAUDE.md          # 当前工作目录指令
+```
+
+### 内容格式
+
+```markdown
+# 项目指令
+
+## 编码规范
+- 使用 TypeScript strict 模式
+- 测试覆盖率 ≥ 80%
+
+## 项目结构
+- src/components/ - React 组件
+- src/utils/ - 工具函数
+
+## 约束
+- 不使用 any 类型
+- 必须通过 ESLint 检查
+```
+
+## 状态变更监听
+
+```typescript
+// src/state/onChangeAppState.ts
+function onChangeAppState(
+  selector: (state: AppState) => T,
+  callback: (newValue: T, oldValue: T) => void
+): () => void  // 返回取消监听函数
+```
+
+### 用法示例
+
+```typescript
+// 监听处理状态变化
+const unsubscribe = onChangeAppState(
+  state => state.isProcessing,
+  (isProcessing) => {
+    if (!isProcessing) {
+      // 处理完成，更新 UI
+      updateStatusBar()
+    }
+  }
+)
+```
+
+## Teammate 视图
+
+当处于 Team 模式时，状态需要区分主视角和队友视角：
+
+```typescript
+// src/state/teammateViewHelpers.ts
+interface TeammateViewState {
+  isViewingTeammate: boolean
+  currentTeammateName: string | null
+  teammateMessages: Map<string, Message[]>
+}
+```
+
+切换队友视图时，消息列表会切换到对应队友的对话历史。
+
+## State 文件结构
+
+```
+src/state/
+├── AppState.tsx          # 核心状态定义和 Provider
+├── AppStateStore.ts      # Store 实现
+├── store.ts              # Store 工具函数
+├── selectors.ts          # 状态选择器
+├── onChangeAppState.ts   # 状态变更监听
+└── teammateViewHelpers.ts # Teammate 视图辅助
+```

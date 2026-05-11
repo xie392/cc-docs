@@ -1,0 +1,217 @@
+# 上下文构建
+
+## 概述
+
+系统提示词（System Prompt）的构建是 Claude Code 最核心的智能之一。每次 API 调用时，需要将多种来源的信息组装成完整的上下文。
+
+## 构建流程
+
+```typescript
+// context.ts 简化逻辑
+async function buildSystemPrompt(options: ContextOptions): Promise<string> {
+  const parts = []
+  
+  // 1. 基础系统指令（角色定义、行为规则）
+  parts.push(getBaseSystemInstruction())
+  
+  // 2. 工具描述
+  parts.push(getToolDescriptions(options.tools))
+  
+  // 3. CLAUDE.md 内容
+  parts.push(await getClaudeMdContent())
+  
+  // 4. Git 上下文
+  parts.push(await getGitContext())
+  
+  // 5. 记忆内容
+  parts.push(await getMemoryContent())
+  
+  // 6. 环境信息
+  parts.push(getEnvironmentInfo())
+  
+  return parts.join('\n\n')
+}
+```
+
+## 基础系统指令
+
+基础指令定义了 Claude Code 的身份、行为规则和约束：
+
+```typescript
+// 系统指令核心结构（简化）
+const BASE_SYSTEM_INSTRUCTION = `
+You are Claude Code, Anthropic's official CLI for Claude.
+You are an interactive agent that helps users with software engineering tasks.
+
+## Core behaviors:
+- Use tools to accomplish tasks
+- Ask for permission before destructive operations
+- Be concise and direct
+- Follow the user's coding conventions
+
+## Tool Use:
+- Use the appropriate tool for each task
+- Verify results after tool execution
+- Handle errors gracefully
+
+## Constraints:
+- Never generate malicious code
+- Respect file permissions
+- Don't access files outside the project
+`
+```
+
+## CLAUDE.md 加载
+
+CLAUDE.md 文件按层级加载，内容合并：
+
+```
+1. 用户全局: ~/.claude/CLAUDE.md
+   → 所有项目共享的偏好
+   
+2. 项目根目录: .claude/CLAUDE.md 或 CLAUDE.md
+   → 项目特定的规范和结构
+   
+3. 子目录: path/to/subdir/CLAUDE.md
+   → 目录级别的指令（如特定模块的约定）
+```
+
+### CLAUDE.md 解析
+
+```typescript
+async function getClaudeMdContent(): Promise<string> {
+  const files = []
+  
+  // 全局
+  const globalPath = path.join(os.homedir(), '.claude', 'CLAUDE.md')
+  if (await exists(globalPath)) {
+    files.push(await readFile(globalPath))
+  }
+  
+  // 项目级
+  const projectPath = path.join(process.cwd(), 'CLAUDE.md')
+  if (await exists(projectPath)) {
+    files.push(await readFile(projectPath))
+  }
+  
+  // .claude/CLAUDE.md
+  const dotClaudePath = path.join(process.cwd(), '.claude', 'CLAUDE.md')
+  if (await exists(dotClaudePath)) {
+    files.push(await readFile(dotClaudePath))
+  }
+  
+  return files.join('\n\n')
+}
+```
+
+## Git 上下文
+
+每次对话自动注入当前 Git 仓库信息：
+
+```typescript
+async function getGitContext(): Promise<string> {
+  const branch = await git('rev-parse', '--abbrev-ref', 'HEAD')
+  const status = await git('status', '--short')
+  const remote = await git('remote', '-v')
+  const recentCommits = await git('log', '--oneline', '-5')
+  
+  return `
+Current git branch: ${branch}
+Remote: ${remote}
+Status: ${status}
+Recent commits: ${recentCommits}
+  `.trim()
+}
+```
+
+### 注入的 Git 信息
+
+| 信息 | 说明 |
+|------|------|
+| 当前分支 | 帮助 AI 理解工作上下文 |
+| 仓库状态 | 了解未提交的变更 |
+| 远程仓库 | 知道项目的 origin |
+| 最近提交 | 理解最近的开发活动 |
+
+## 记忆系统
+
+记忆系统让 AI 可以跨会话记住信息：
+
+```typescript
+async function getMemoryContent(): Promise<string> {
+  const memoryPath = path.join(process.cwd(), 'MEMORY.md')
+  if (await exists(memoryPath)) {
+    return await readFile(memoryPath)
+  }
+  return ''
+}
+```
+
+### 记忆类型
+
+| 类型 | 文件 | 作用 |
+|------|------|------|
+| 用户记忆 | `memory/user_*.md` | 用户偏好、角色 |
+| 反馈记忆 | `memory/feedback_*.md` | 行为纠正 |
+| 项目记忆 | `memory/project_*.md` | 项目上下文 |
+| 参考记忆 | `memory/reference_*.md` | 外部资源指针 |
+
+## 环境信息
+
+```typescript
+function getEnvironmentInfo(): string {
+  return `
+Platform: ${process.platform}
+Shell: ${process.env.SHELL}
+Node: ${process.version}
+Working Directory: ${process.cwd()}
+  `.trim()
+}
+```
+
+## 上下文压缩
+
+当对话过长接近 token 限制时，触发上下文压缩：
+
+```typescript
+// 压缩策略
+async function compactContext(messages: Message[]): Promise<Message[]> {
+  // 1. 计算当前 token 使用量
+  const tokenCount = estimateTokens(messages)
+  
+  // 2. 超过阈值时触发压缩
+  if (tokenCount < COMPACTION_THRESHOLD) return messages
+  
+  // 3. 保留最近 N 条消息
+  const recentMessages = messages.slice(-KEEP_RECENT_COUNT)
+  
+  // 4. 将早期消息摘要
+  const summary = await summarizeMessages(
+    messages.slice(0, -KEEP_RECENT_COUNT)
+  )
+  
+  // 5. 保留关键工具调用结果
+  const importantResults = extractImportantToolResults(messages)
+  
+  return [
+    { role: 'user', content: `对话摘要: ${summary}` },
+    ...importantResults,
+    ...recentMessages,
+  ]
+}
+```
+
+### 压缩触发条件
+
+- Token 使用量超过模型上下文窗口的 80%
+- 用户手动触发 `/compact` 命令
+- 自动压缩（设置中启用时）
+
+### 压缩保留策略
+
+| 保留 | 丢弃 |
+|------|------|
+| 最近 10 条消息 | 早期对话文本 |
+| 工具调用的关键结果 | 重复的搜索结果 |
+| 错误信息 | 中间推理过程 |
+| 用户的明确指令 | 大段代码输出 |

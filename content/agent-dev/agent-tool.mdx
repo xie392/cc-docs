@@ -1,0 +1,270 @@
+# AgentTool 子代理
+
+## 概述
+
+AgentTool 是 Claude Code 的子 Agent 调用机制，允许主 Agent 生成独立的子 Agent 来执行特定任务。这是构建复杂 AI 工作流的基础。
+
+## 工作原理
+
+```
+主 Agent
+  │
+  ├── 分析任务，决定需要子任务
+  │
+  └── 调用 AgentTool
+       │
+       ├── 1. 创建新的对话上下文
+       │    ├── 空的消息历史
+       │    ├── 独立的 System Prompt
+       │    └── 独立的 AbortController
+       │
+       ├── 2. 配置工具集
+       │    ├── 继承主 Agent 的全部工具
+       │    └── 或使用 Agent 定义中指定的子集
+       │
+       ├── 3. 执行独立对话循环
+       │    ├── 子 Agent 接收 prompt
+       │    ├── 子 Agent 独立推理和调用工具
+       │    ├── 子 Agent 不与用户直接交互
+       │    └── 结果自动汇总
+       │
+       └── 4. 返回结果摘要
+            ├── 关键发现和结论
+            ├── 使用的工具列表
+            └── 完整输出（可截断）
+```
+
+## AgentTool 接口
+
+```typescript
+// tools/AgentTool/AgentTool.ts（简化）
+class AgentTool implements Tool<AgentInput, AgentOutput> {
+  name = 'Agent'
+  description = 'Launch a specialized sub-agent...'
+  
+  inputSchema = z.object({
+    prompt: z.string().describe('给子 Agent 的任务描述'),
+    subagent_type: z.string().optional()
+      .describe('子 Agent 类型（对应 .claude/agents/ 下的定义）'),
+    name: z.string().optional()
+      .describe('子 Agent 名称标识'),
+  })
+  
+  async execute(input: AgentInput, context: ToolUseContext) {
+    // 1. 加载 Agent 定义
+    const agentDef = await this.loadAgentDefinition(input.subagent_type)
+    
+    // 2. 创建子 Agent 上下文
+    const subContext = createSubContext(context, agentDef)
+    
+    // 3. 执行子 Agent 对话循环
+    const result = await runSubAgent(input.prompt, subContext)
+    
+    // 4. 返回摘要
+    return {
+      type: 'tool_result',
+      tool_use_id: context.toolUseId,
+      content: summarizeResult(result),
+    }
+  }
+}
+```
+
+## Agent 定义文件
+
+### 目录位置
+
+```
+.claude/agents/
+├── code-reviewer.md      # 代码审查 Agent
+├── security-auditor.md   # 安全审计 Agent
+├── test-runner.md        # 测试运行 Agent
+└── ...
+```
+
+### 定义格式
+
+```markdown
+<!-- .claude/agents/code-reviewer.md -->
+---
+name: code-reviewer
+description: Review code for quality, security, and maintainability
+tools:
+  - FileReadTool
+  - GrepTool
+  - GlobTool
+  - BashTool
+model: claude-sonnet-4-6
+---
+
+You are a code reviewer. Analyze the provided code for:
+1. Security vulnerabilities
+2. Performance issues
+3. Code style violations
+4. Missing error handling
+
+Provide actionable feedback with specific line references.
+```
+
+### Frontmatter 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | Agent 唯一标识 |
+| `description` | string | Agent 功能描述 |
+| `tools` | string[] | 可用工具子集 |
+| `model` | string | 使用的模型 |
+
+### 加载逻辑
+
+```typescript
+// tools/AgentTool/loadAgentsDir.ts
+async function loadAgentsDir(): Promise<Map<string, AgentDefinition>> {
+  const agentsDir = path.join(process.cwd(), '.claude', 'agents')
+  const agents = new Map()
+  
+  if (!await exists(agentsDir)) return agents
+  
+  const files = await glob('*.md', { cwd: agentsDir })
+  
+  for (const file of files) {
+    const content = await readFile(path.join(agentsDir, file), 'utf8')
+    const { frontmatter, body } = parseFrontmatter(content)
+    
+    agents.set(frontmatter.name, {
+      name: frontmatter.name,
+      description: frontmatter.description,
+      instructions: body,
+      tools: frontmatter.tools,
+      model: frontmatter.model,
+    })
+  }
+  
+  return agents
+}
+```
+
+## 工具继承
+
+### 全部继承
+
+如果不指定 `tools` 字段，子 Agent 继承主 Agent 的全部工具：
+
+```markdown
+---
+name: general-assistant
+description: General purpose assistant
+---
+```
+
+### 子集继承
+
+指定 `tools` 字段时，子 Agent 只能使用列出的工具：
+
+```markdown
+---
+name: code-reviewer
+tools:
+  - FileReadTool
+  - GrepTool
+  - GlobTool
+---
+```
+
+### 工具过滤逻辑
+
+```typescript
+function getSubAgentTools(
+  agentDef: AgentDefinition,
+  parentTools: Tool[]
+): Tool[] {
+  if (!agentDef.tools) return parentTools
+  
+  return parentTools.filter(tool => 
+    agentDef.tools!.includes(tool.name)
+  )
+}
+```
+
+## 结果摘要
+
+子 Agent 完成后，返回摘要而非完整输出：
+
+```typescript
+function summarizeResult(result: SubAgentResult): string {
+  const parts = []
+  
+  parts.push(`子 Agent 完成: ${result.summary}`)
+  
+  if (result.toolCalls.length > 0) {
+    parts.push(`使用的工具: ${result.toolCalls.join(', ')}`)
+  }
+  
+  if (result.keyFindings.length > 0) {
+    parts.push('关键发现:')
+    result.keyFindings.forEach(f => parts.push(`- ${f}`))
+  }
+  
+  // 完整输出如果不太长则包含
+  if (result.output.length < MAX_SUMMARY_LENGTH) {
+    parts.push(result.output)
+  }
+  
+  return parts.join('\n')
+}
+```
+
+## 嵌套调用
+
+子 Agent 可以继续调用 AgentTool，形成嵌套结构：
+
+```
+主 Agent
+  └── 子 Agent A
+       └── 子 Agent A1
+       └── 子 Agent A2
+  └── 子 Agent B
+```
+
+### 深度限制
+
+为防止无限递归，嵌套深度有上限：
+
+```typescript
+const MAX_AGENT_DEPTH = 3
+
+function createSubContext(
+  parentContext: ToolUseContext,
+  agentDef: AgentDefinition
+): ToolUseContext {
+  const depth = (parentContext.agentDepth ?? 0) + 1
+  
+  if (depth > MAX_AGENT_DEPTH) {
+    throw new Error(`Agent 嵌套深度超过限制 (${MAX_AGENT_DEPTH})`)
+  }
+  
+  return {
+    ...parentContext,
+    agentDepth: depth,
+  }
+}
+```
+
+## 内置 Agent 类型
+
+Claude Code 内置了多种 Agent 类型：
+
+| 类型 | 说明 | 默认工具 |
+|------|------|----------|
+| `Explore` | 代码库探索 | GlobTool, GrepTool, FileReadTool |
+| `General` | 通用任务 | 全部工具 |
+| `code-reviewer` | 代码审查 | 读取和搜索工具 |
+| `security-reviewer` | 安全审查 | 读取、搜索和执行工具 |
+
+## 最佳实践
+
+1. **明确指令**：给子 Agent 清晰的任务描述和约束
+2. **限制工具**：只授予必要的工具，减少误操作风险
+3. **合理模型**：简单任务用快速模型，复杂任务用强模型
+4. **避免嵌套**：尽量保持单层调用，嵌套增加复杂度和延迟
+5. **结果验证**：主 Agent 应检查子 Agent 的返回结果

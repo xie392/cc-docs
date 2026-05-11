@@ -1,0 +1,248 @@
+# Shell Hooks
+
+## 概述
+
+Shell Hooks 允许用户配置外部命令，在特定事件触发时自动执行。这是一种轻量级的扩展机制，不需要编写代码。
+
+## 配置方式
+
+在 `.claude/settings.json` 中配置 Shell Hooks：
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "command": "echo 'Running: $COMMAND'",
+        "timeout": 5000
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "FileEditTool",
+        "command": "npx eslint $FILE_PATH",
+        "timeout": 10000
+      }
+    ],
+    "Notification": [
+      {
+        "command": "osascript -e 'display notification \"Claude Code 完成\"'"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "echo 'Session ended'"
+      }
+    ]
+  }
+}
+```
+
+## Hook 事件类型
+
+| 事件 | 触发时机 | 可用变量 | 可阻止操作 |
+|------|----------|----------|------------|
+| `PreToolUse` | 工具执行前 | `$TOOL_NAME`, `$INPUT` | 是 |
+| `PostToolUse` | 工具执行后 | `$TOOL_NAME`, `$RESULT` | 否 |
+| `Notification` | 通知发送时 | `$MESSAGE` | 否 |
+| `Stop` | 会话结束时 | — | 否 |
+
+## Hook 定义
+
+```typescript
+interface HookDefinition {
+  matcher?: string    // 工具名匹配（支持正则）
+  command: string     // 要执行的 Shell 命令
+  timeout?: number    // 超时时间(ms)，默认 30000
+}
+```
+
+### matcher 字段
+
+matcher 用于过滤哪些工具触发该 Hook：
+
+```
+"matcher": "Bash"              // 精确匹配 Bash 工具
+"matcher": "File.*"            // 正则匹配所有文件工具
+"matcher": ".*"                // 匹配所有工具
+省略 matcher                    // 匹配所有工具
+```
+
+## 执行流程
+
+```
+1. 事件触发（如工具调用）
+    │
+    ▼
+2. 遍历匹配的 Hook
+    │
+    ├── 检查 matcher 是否匹配当前工具
+    │
+    ▼
+3. 设置环境变量
+    │
+    ├── $TOOL_NAME: 工具名称
+    ├── $INPUT: 工具输入 (JSON)
+    ├── $RESULT: 工具结果 (JSON，仅 PostToolUse)
+    └── $MESSAGE: 通知消息（仅 Notification）
+    │
+    ▼
+4. 执行 command
+    │
+    ├── 启动子进程
+    ├── 传递环境变量
+    └── 超时检查
+    │
+    ▼
+5. 处理退出码
+    │
+    ├── exit 0: 正常，继续操作
+    ├── exit 2: 阻止操作（仅 PreToolUse）
+    └── 其他: 警告但继续
+```
+
+## PreToolUse Hook
+
+在工具执行前触发，可以阻止操作。
+
+### 使用场景
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "command": "audit-command.sh",
+      "timeout": 5000
+    },
+    {
+      "matcher": "FileWriteTool",
+      "command": "check-protected-paths.sh",
+      "timeout": 3000
+    }
+  ]
+}
+```
+
+### 阻止操作
+
+当 PreToolUse Hook 以 exit code 2 退出时，操作被阻止：
+
+```bash
+#!/bin/bash
+# check-protected-paths.sh
+if echo "$INPUT" | grep -q "/etc/\|/usr/local/"; then
+  echo "Error: 不允许修改系统路径"
+  exit 2
+fi
+exit 0
+```
+
+## PostToolUse Hook
+
+在工具执行后触发，用于自动化验证。
+
+### 使用场景
+
+```json
+{
+  "PostToolUse": [
+    {
+      "matcher": "FileEditTool",
+      "command": "npx eslint $FILE_PATH",
+      "timeout": 10000
+    },
+    {
+      "matcher": "FileWriteTool",
+      "command": "npx prettier --write $FILE_PATH",
+      "timeout": 5000
+    }
+  ]
+}
+```
+
+### 环境变量
+
+```bash
+$TOOL_NAME   → "FileEditTool"
+$RESULT      → '{"type":"tool_result","tool_use_id":"...","content":"..."}'
+```
+
+## Notification Hook
+
+通知事件触发时执行，用于自定义通知方式。
+
+### 使用场景
+
+```json
+{
+  "Notification": [
+    {
+      "command": "osascript -e 'display notification \"Claude Code: $MESSAGE\"'"
+    },
+    {
+      "command": "curl -X POST https://hooks.slack.com/... -d '{\"text\":\"$MESSAGE\"}'"
+    }
+  ]
+}
+```
+
+## Stop Hook
+
+会话结束时执行。
+
+### 使用场景
+
+```json
+{
+  "Stop": [
+    {
+      "command": "echo 'Session ended at $(date)' >> ~/.claude/session-log.txt"
+    }
+  ]
+}
+```
+
+## 安全考虑
+
+1. **命令注入**：环境变量值会被转义，但仍需注意命令构造
+2. **超时**：设置合理的超时，避免 Hook 阻塞主流程
+3. **权限**：Hook 命令以用户权限执行
+4. **日志**：Hook 执行结果会记录到会话日志
+5. **错误处理**：Hook 失败不会导致主流程中断（除 exit 2）
+
+## 完整示例
+
+### 代码质量保障
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "FileEditTool|FileWriteTool",
+        "command": "check-file-size.sh",
+        "timeout": 3000
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "FileEditTool|FileWriteTool",
+        "command": "npx eslint --fix $FILE_PATH && npx prettier --write $FILE_PATH",
+        "timeout": 15000
+      },
+      {
+        "matcher": "Bash",
+        "command": "echo '[AUDIT] $(date): $COMMAND' >> ~/.claude/audit.log",
+        "timeout": 1000
+      }
+    ],
+    "Notification": [
+      {
+        "command": "osascript -e 'display notification \"$MESSAGE\" with title \"Claude Code\"'"
+      }
+    ]
+  }
+}
+```

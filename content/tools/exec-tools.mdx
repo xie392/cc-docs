@@ -1,0 +1,222 @@
+# 执行工具
+
+## 概述
+
+执行工具允许 AI 运行 Shell 命令，是与操作系统交互的桥梁。Claude Code 提供了 BashTool 和 PowerShellTool 两个执行工具。
+
+## BashTool
+
+BashTool 是最强大的工具之一，允许在 Shell 中执行任意命令。
+
+### 目录结构
+
+```
+tools/BashTool/
+├── BashTool.ts            # 工具主类
+├── bashToolHelpers.ts     # 辅助函数
+├── BashOutput.tsx         # 输出渲染组件
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  command: z.string().describe('要执行的命令'),
+  timeout: z.number().optional().describe('超时时间(ms)'),
+  working_directory: z.string().optional().describe('工作目录'),
+  description: z.string().describe('命令用途描述'),
+  run_in_background: z.boolean().optional()
+    .describe('是否后台运行'),
+})
+```
+
+### 执行流程
+
+```
+1. 权限检查
+   │
+   ├── 危险命令检测 (rm -rf, sudo, ...)
+   ├── 沙箱检查 (是否在沙箱环境中)
+   └── 用户确认
+       │
+2. 命令执行
+   │
+   ├── 设置工作目录
+   ├── 设置环境变量
+   ├── 启动子进程 (execa)
+   ├── 捕获 stdout/stderr
+   └── 超时控制
+   │
+3. 结果处理
+   │
+   ├── 截断过长输出
+   ├── 渲染到终端
+   └── 返回给 AI
+```
+
+### 安全机制
+
+```typescript
+// 危险命令检测
+const DANGEROUS_PATTERNS = [
+  /rm\s+-rf\s+\//,          // 递归删除根目录
+  /sudo\s+rm/,               // sudo 删除
+  />\s*\/dev\/sd/,           // 直接写磁盘
+  /dd\s+if=.*of=\/dev/,     // dd 写设备
+  /mkfs/,                    // 格式化
+  /:\s*\(\)\s*\{/,           // Fork bomb
+]
+
+function isDangerousCommand(command: string): boolean {
+  return DANGEROUS_PATTERNS.some(p => p.test(command))
+}
+```
+
+### 超时处理
+
+```typescript
+async execute(input: BashInput, context: ToolUseContext) {
+  const timeout = input.timeout ?? DEFAULT_TIMEOUT // 默认 120000ms
+  
+  const result = await execa(input.command, {
+    cwd: input.working_directory,
+    timeout,
+    signal: context.abortController.signal,
+    shell: true,
+    reject: false,  // 不抛出非零退出码
+  })
+  
+  return {
+    stdout: truncateOutput(result.stdout, MAX_OUTPUT_LENGTH),
+    stderr: truncateOutput(result.stderr, MAX_OUTPUT_LENGTH),
+    exitCode: result.exitCode,
+  }
+}
+```
+
+### 后台执行
+
+```typescript
+// 后台执行模式
+if (input.run_in_background) {
+  const task = await spawnBackgroundTask(input.command, {
+    cwd: input.working_directory,
+  })
+  
+  return {
+    taskId: task.id,
+    status: 'running',
+    message: `后台任务 ${task.id} 已启动`,
+  }
+}
+```
+
+后台任务的特点：
+- 不阻塞主循环
+- 输出保存到临时文件
+- 可通过 TaskOutput 获取输出
+- 完成时发送通知
+
+### BashOutput 渲染
+
+```typescript
+// BashOutput.tsx — 使用 Ink 渲染命令输出
+function BashOutput({ result }: { result: BashResult }) {
+  return (
+    <Box flexDirection="column">
+      <Text color="gray">$ {result.command}</Text>
+      {result.stdout && <Text>{result.stdout}</Text>}
+      {result.stderr && <Text color="red">{result.stderr}</Text>}
+      <Text color="gray">Exit code: {result.exitCode}</Text>
+    </Box>
+  )
+}
+```
+
+## PowerShellTool
+
+Windows 环境下的命令执行工具，与 BashTool 类似但使用 PowerShell。
+
+### 目录结构
+
+```
+tools/PowerShellTool/
+├── PowerShellTool.ts      # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  command: z.string().describe('PowerShell 命令'),
+  timeout: z.number().optional(),
+  working_directory: z.string().optional(),
+  description: z.string(),
+})
+```
+
+### 与 BashTool 的差异
+
+| 特性 | BashTool | PowerShellTool |
+|------|----------|----------------|
+| 平台 | macOS/Linux | Windows |
+| Shell | bash/zsh | powershell.exe |
+| 路径分隔符 | `/` | `\` |
+| 环境变量 | `$VAR` | `$env:VAR` |
+| 管道 | `\|` | `\|` |
+| 命令链接 | `&&` | `;` |
+
+### 自动选择
+
+Claude Code 根据平台自动选择执行工具：
+
+```typescript
+function getExecutionTool(): typeof BashTool | typeof PowerShellTool {
+  return process.platform === 'win32' ? PowerShellTool : BashTool
+}
+```
+
+## 安全设计
+
+### 命令审查
+
+所有命令在执行前都经过审查：
+
+```
+1. 模式匹配 → 检测危险命令
+2. 路径检查 → 防止路径遍历
+3. 环境变量 → 过滤敏感变量
+4. 沙箱限制 → 限制文件系统访问
+```
+
+### 权限分级
+
+```typescript
+type CommandRisk = 
+  | 'safe'         // 读取命令: ls, cat, git status
+  | 'moderate'     // 修改命令: npm install, git add
+  | 'dangerous'    // 破坏性命令: rm, sudo, chmod
+```
+
+### 用户确认
+
+```typescript
+// 确认流程
+const decision = await context.canUseTool('Bash', {
+  command: input.command,
+  risk: assessRisk(input.command),
+})
+
+switch (decision) {
+  case 'allow':
+    return executeCommand(input)
+  case 'deny':
+    return { error: 'User denied this command' }
+  case 'allow_session':
+    // 本次会话中类似命令自动通过
+    addSessionAllowance(input.command)
+    return executeCommand(input)
+}
+```

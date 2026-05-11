@@ -1,0 +1,271 @@
+# SDK 集成
+
+## 概述
+
+Claude Code 提供 SDK 模式，允许开发者以编程方式调用 Claude Code 的能力，将 AI 编程助手集成到自己的应用中。
+
+## SDK 类型定义
+
+### 核心接口
+
+```typescript
+// src/entrypoints/agentSdkTypes.ts
+
+interface SDKConfig {
+  model?: string                    // 模型选择
+  permissionMode?: PermissionMode   // 权限模式
+  tools?: Tool[]                    // 自定义工具集
+  systemPrompt?: string             // 自定义系统提示
+  workingDirectory?: string         // 工作目录
+  maxTokens?: number                // 最大输出 token
+}
+
+interface SDKMessage {
+  role: 'user' | 'assistant'
+  content: ContentBlock[]
+}
+
+interface SDKStatus {
+  type: 'idle' | 'running' | 'waiting_for_permission' | 'error'
+  message?: string
+}
+```
+
+### 权限模式
+
+```typescript
+type PermissionMode =
+  | 'default'        // 每次写操作需确认
+  | 'auto-accept'    // 自动接受所有操作
+  | 'plan'           // 只规划不执行
+```
+
+## 基本使用
+
+### 创建 SDK 实例
+
+```typescript
+import { ClaudeCode } from 'claude-code-sdk'
+
+const agent = new ClaudeCode({
+  model: 'claude-sonnet-4-6',
+  permissionMode: 'auto-accept',
+  workingDirectory: '/path/to/project',
+})
+```
+
+### 流式对话
+
+```typescript
+const stream = agent.chat('实现用户认证功能')
+
+for await (const event of stream) {
+  switch (event.type) {
+    case 'text':
+      process.stdout.write(event.content)
+      break
+    
+    case 'tool_use':
+      console.log(`[工具] ${event.name}`)
+      break
+    
+    case 'tool_result':
+      console.log(`[结果] ${event.content.substring(0, 100)}...`)
+      break
+    
+    case 'thinking':
+      // Extended Thinking 输出
+      break
+    
+    case 'done':
+      console.log('\n对话完成')
+      break
+  }
+}
+```
+
+### 多轮对话
+
+```typescript
+// SDK 保持对话状态
+await agent.chat('创建一个 Express 服务器')
+await agent.chat('添加认证中间件')
+await agent.chat('为认证编写测试')
+
+// 获取完整对话历史
+const history = agent.getHistory()
+```
+
+## 自定义工具
+
+SDK 模式支持注册自定义工具：
+
+```typescript
+const agent = new ClaudeCode({
+  tools: [
+    {
+      name: 'database_query',
+      description: 'Query the database',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string', description: 'SQL query' },
+        },
+        required: ['sql'],
+      },
+      execute: async (input) => {
+        const result = await db.query(input.sql)
+        return { content: JSON.stringify(result) }
+      },
+    },
+  ],
+})
+```
+
+## 事件回调
+
+```typescript
+const agent = new ClaudeCode({
+  onToolUse: (toolName, input) => {
+    logger.info(`Tool used: ${toolName}`, input)
+  },
+  onToolResult: (toolName, result) => {
+    logger.info(`Tool result: ${toolName}`, result)
+  },
+  onPermissionRequest: (toolName, input) => {
+    // 自定义权限处理
+    return true  // 允许
+  },
+  onError: (error) => {
+    logger.error('SDK error', error)
+  },
+})
+```
+
+## HTTP 服务器模式
+
+Claude Code 可以作为 HTTP 服务器运行：
+
+```bash
+# 启动服务器
+claude-code serve --port 8080
+```
+
+### API 端点
+
+```
+POST /chat         # 发送消息
+GET /status        # 获取状态
+POST /abort        # 中止当前操作
+GET /history       # 获取对话历史
+```
+
+### 请求格式
+
+```json
+POST /chat
+{
+  "message": "实现用户认证",
+  "model": "claude-sonnet-4-6",
+  "stream": true
+}
+```
+
+### 响应格式
+
+```
+SSE 事件流:
+event: text
+data: {"content": "我来帮你实现..."}
+
+event: tool_use
+data: {"name": "FileReadTool", "input": {...}}
+
+event: done
+data: {"usage": {"input_tokens": 1000, "output_tokens": 500}}
+```
+
+## SDK 与 MCP 集成
+
+SDK 模式可以连接 MCP 服务器：
+
+```typescript
+const agent = new ClaudeCode({
+  mcpServers: {
+    'my-database': {
+      command: 'node',
+      args: ['./mcp-db-server.js'],
+      env: { DB_URL: 'postgresql://localhost/mydb' },
+    },
+  },
+})
+
+// MCP 工具自动发现并可用
+await agent.chat('查询用户表有多少条记录')
+```
+
+## 远程会话
+
+### SSH 模式
+
+```typescript
+const agent = new ClaudeCode({
+  remote: {
+    type: 'ssh',
+    host: 'dev-server.example.com',
+    user: 'developer',
+    workingDirectory: '/home/developer/project',
+  },
+})
+```
+
+### Docker 模式
+
+```typescript
+const agent = new ClaudeCode({
+  remote: {
+    type: 'docker',
+    image: 'claude-code-env:latest',
+    workingDirectory: '/workspace',
+  },
+})
+```
+
+## 用量追踪
+
+```typescript
+const agent = new ClaudeCode({
+  onUsage: (usage) => {
+    console.log(`Input: ${usage.input_tokens}`)
+    console.log(`Output: ${usage.output_tokens}`)
+    console.log(`Cache read: ${usage.cache_read_input_tokens}`)
+    console.log(`Cost: $${usage.estimated_cost}`)
+  },
+})
+```
+
+## 错误处理
+
+```typescript
+try {
+  const result = await agent.chat('重构认证模块')
+} catch (error) {
+  if (error instanceof RateLimitError) {
+    console.log('速率限制，稍后重试')
+  } else if (error instanceof AuthError) {
+    console.log('认证失败，请重新登录')
+  } else if (error instanceof ContextWindowError) {
+    console.log('上下文过长，需要压缩')
+  } else {
+    throw error
+  }
+}
+```
+
+## 最佳实践
+
+1. **权限模式选择**：自动化场景使用 `auto-accept`，交互场景使用 `default`
+2. **流式处理**：始终使用流式模式，避免长时间等待
+3. **错误恢复**：实现重试逻辑，处理速率限制和网络错误
+4. **资源清理**：使用完毕后关闭 SDK 实例
+5. **成本控制**：监控 token 用量，设置合理的 `maxTokens`

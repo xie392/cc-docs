@@ -1,0 +1,230 @@
+# MCP 服务
+
+## 概述
+
+MCP (Model Context Protocol) 服务层管理 MCP 服务器的连接、工具发现和生命周期。
+
+## 目录结构
+
+```
+src/services/mcp/
+├── types.ts               # MCP 类型定义
+├── client.ts              # MCP 客户端实现
+├── connection.ts          # 连接管理
+└── ...
+```
+
+## MCP 协议
+
+### 协议概述
+
+MCP 是一种标准化的协议，允许 AI 应用与外部工具和数据源交互：
+
+```
+┌────────────┐                 ┌────────────┐
+│ Claude Code │ ←── JSON-RPC ──→ │ MCP Server │
+│  (Client)  │                  │  (Server)  │
+└────────────┘                  └────────────┘
+
+协议方法:
+- initialize          初始化握手
+- tools/list          列出可用工具
+- tools/call          调用工具
+- resources/list      列出可用资源
+- resources/read      读取资源
+- prompts/list        列出提示模板
+- prompts/get         获取提示
+```
+
+### 初始化握手
+
+```typescript
+// 客户端发送
+{
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": { ... },
+    "clientInfo": { "name": "Claude Code", "version": "2.1.116" }
+  }
+}
+
+// 服务器响应
+{
+  "protocolVersion": "2024-11-05",
+  "capabilities": {
+    "tools": { "listChanged": true },
+    "resources": { "subscribe": true }
+  },
+  "serverInfo": { "name": "my-tools", "version": "1.0.0" }
+}
+```
+
+## 传输层
+
+### stdio 传输
+
+```typescript
+// stdio 传输：通过子进程的标准输入输出通信
+class StdioTransport {
+  private process: ChildProcess
+  
+  async connect(config: StdioConfig) {
+    this.process = spawn(config.command, config.args, {
+      env: { ...process.env, ...config.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    
+    // 通过 stdin/stdout 发送/接收 JSON-RPC 消息
+    this.process.stdout.on('data', this.handleMessage)
+  }
+  
+  async send(message: JSONRPCMessage) {
+    this.process.stdin.write(
+      `Content-Length: ${Buffer.byteLength(JSON.stringify(message))}\r\n\r\n` +
+      JSON.stringify(message)
+    )
+  }
+}
+```
+
+### SSE 传输
+
+```typescript
+// SSE 传输：通过 HTTP 连接通信
+class SSETransport {
+  private eventSource: EventSource
+  
+  async connect(config: SSEConfig) {
+    this.eventSource = new EventSource(config.url, {
+      headers: config.headers,
+    })
+    
+    this.eventSource.onmessage = (event) => {
+      this.handleMessage(JSON.parse(event.data))
+    }
+  }
+  
+  async send(message: JSONRPCMessage) {
+    await fetch(config.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message),
+    })
+  }
+}
+```
+
+## 工具发现
+
+```typescript
+// 工具发现流程
+async function discoverTools(client: MCPClient): Promise<MCPToolDefinition[]> {
+  const response = await client.request('tools/list', {})
+  
+  return response.tools.map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,  // JSON Schema
+  }))
+}
+```
+
+### 工具注册
+
+发现工具后，为每个 MCP 工具创建 MCPTool 实例并注册：
+
+```typescript
+async function registerMCPTools(
+  serverName: string,
+  client: MCPClient
+) {
+  const toolDefs = await discoverTools(client)
+  
+  for (const def of toolDefs) {
+    const mcpTool = new MCPTool({
+      name: `${serverName}.${def.name}`,
+      description: def.description,
+      inputSchema: convertSchema(def.inputSchema),
+      client,
+      originalName: def.name,
+    })
+    
+    toolRegistry.register(mcpTool)
+  }
+}
+```
+
+## 资源管理
+
+### 资源类型
+
+```typescript
+interface MCPResource {
+  uri: string           // 资源 URI
+  name: string          // 资源名称
+  description?: string  // 描述
+  mimeType?: string     // MIME 类型
+}
+```
+
+### 资源访问
+
+```typescript
+async function readResource(
+  client: MCPClient,
+  uri: string
+): Promise<ResourceContent> {
+  const response = await client.request('resources/read', { uri })
+  return response.contents[0]
+}
+```
+
+## 连接状态管理
+
+```typescript
+type ConnectionStatus = 
+  | 'connecting'    // 正在连接
+  | 'connected'     // 已连接
+  | 'disconnected'  // 已断开
+  | 'error'         // 连接错误
+
+interface MCPServerConnection {
+  name: string
+  transport: 'stdio' | 'sse'
+  status: ConnectionStatus
+  tools: MCPToolDefinition[]
+  resources: MCPResource[]
+  client: MCPClient
+}
+```
+
+### 自动重连
+
+```typescript
+async function maintainConnection(conn: MCPServerConnection) {
+  while (true) {
+    try {
+      await conn.client.connect()
+      conn.status = 'connected'
+      
+      // 重新发现工具（服务器可能更新了）
+      conn.tools = await discoverTools(conn.client)
+      
+      // 等待断开
+      await waitForDisconnect(conn.client)
+    } catch (error) {
+      conn.status = 'error'
+      await sleep(RECONNECT_DELAY)
+    }
+  }
+}
+```
+
+## 安全考虑
+
+1. **进程隔离**：stdio MCP 服务器作为独立子进程运行
+2. **权限控制**：MCP 工具的每次调用都经过权限检查
+3. **输入验证**：所有从 MCP 服务器接收的数据都经过验证
+4. **资源限制**：限制 MCP 服务器的资源访问范围
+5. **认证支持**：SSE 模式支持 OAuth/API Key 认证

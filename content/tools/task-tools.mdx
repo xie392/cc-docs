@@ -1,0 +1,224 @@
+# 任务管理工具
+
+## 概述
+
+任务管理工具集为 Claude Code 的多 Agent 协作提供了结构化的任务追踪机制。
+
+## TaskCreateTool
+
+创建新任务到任务列表。
+
+### 目录结构
+
+```
+tools/TaskCreateTool/
+├── TaskCreateTool.ts      # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  subject: z.string().describe('任务标题'),
+  description: z.string().describe('任务详情'),
+  activeForm: z.string().optional()
+    .describe('进行中显示的文本'),
+  metadata: z.record(z.string()).optional()
+    .describe('附加元数据'),
+})
+```
+
+### 任务状态
+
+```typescript
+type TaskStatus = 
+  | 'pending'     // 等待开始
+  | 'in_progress' // 正在进行
+  | 'completed'   // 已完成
+  | 'deleted'     // 已删除
+```
+
+### 任务结构
+
+```typescript
+interface Task {
+  id: string
+  subject: string
+  description: string
+  status: TaskStatus
+  owner: string | null       // 分配的 Agent
+  activeForm: string | null
+  blocks: string[]           // 阻塞的任务 ID
+  blockedBy: string[]        // 被哪些任务阻塞
+  metadata: Record<string, unknown>
+}
+```
+
+## TaskGetTool
+
+获取单个任务的完整信息。
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  taskId: z.string().describe('任务 ID'),
+})
+```
+
+### 返回信息
+
+```typescript
+{
+  id: "1",
+  subject: "Implement auth module",
+  description: "Add JWT authentication...",
+  status: "in_progress",
+  owner: "coder-agent",
+  blocks: ["3"],           // 阻塞了任务 3
+  blockedBy: ["2"],        // 被任务 2 阻塞
+}
+```
+
+## TaskListTool
+
+列出任务列表中的所有任务。
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({})
+```
+
+### 返回格式
+
+```typescript
+[
+  { id: "1", subject: "Research API", status: "completed", owner: "researcher" },
+  { id: "2", subject: "Implement auth", status: "in_progress", owner: "coder" },
+  { id: "3", subject: "Write tests", status: "pending", owner: null, blockedBy: ["2"] },
+]
+```
+
+## TaskUpdateTool
+
+更新任务状态和属性。
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  taskId: z.string().describe('任务 ID'),
+  status: z.enum(['pending', 'in_progress', 'completed', 'deleted']).optional(),
+  subject: z.string().optional(),
+  description: z.string().optional(),
+  owner: z.string().optional().describe('分配给指定 Agent'),
+  addBlocks: z.array(z.string()).optional()
+    .describe('添加此任务阻塞的任务'),
+  addBlockedBy: z.array(z.string()).optional()
+    .describe('添加阻塞此任务的任务'),
+  metadata: z.record(z.string()).optional(),
+})
+```
+
+### 状态流转
+
+```
+pending → in_progress → completed
+                         deleted ← (任何状态都可以删除)
+```
+
+### 依赖管理
+
+```typescript
+// 设置任务依赖
+await TaskUpdate({
+  taskId: "3",
+  addBlockedBy: ["2"],  // 任务 3 被任务 2 阻塞
+})
+
+// 任务 2 完成后，任务 3 自动解除阻塞
+await TaskUpdate({
+  taskId: "2",
+  status: "completed",
+})
+```
+
+## TaskOutputTool
+
+获取后台任务的输出。
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  task_id: z.string().describe('任务 ID'),
+  block: z.boolean().optional().default(true)
+    .describe('是否等待完成'),
+  timeout: z.number().optional().default(30000)
+    .describe('等待超时(ms)'),
+})
+```
+
+### 使用场景
+
+```typescript
+// 1. 启动后台 Bash 任务
+const bashResult = await BashTool({
+  command: "npm test",
+  run_in_background: true,
+})
+// 返回: { taskId: "bg-1" }
+
+// 2. 获取输出
+const output = await TaskOutputTool({
+  task_id: "bg-1",
+  block: true,
+  timeout: 60000,
+})
+```
+
+## TaskStopTool
+
+停止正在运行的后台任务。
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  task_id: z.string().describe('要停止的任务 ID'),
+})
+```
+
+## 任务协调模式
+
+### 工作分配流程
+
+```
+1. Team Lead 创建任务
+   TaskCreate({ subject: "Research", description: "..." })
+   TaskCreate({ subject: "Implement", description: "..." })
+   TaskCreate({ subject: "Test", description: "..." })
+
+2. 设置依赖
+   TaskUpdate({ taskId: "3", addBlockedBy: ["2"] })
+
+3. 分配任务
+   TaskUpdate({ taskId: "1", owner: "researcher" })
+   TaskUpdate({ taskId: "2", owner: "coder" })
+
+4. Agent 查看可用任务
+   TaskList() → 找到 pending + 无阻塞 + 分配给自己的任务
+
+5. 完成任务
+   TaskUpdate({ taskId: "1", status: "completed" })
+```
+
+### 优先级策略
+
+Agent 选择任务时遵循以下策略：
+1. 优先选择 ID 最小的任务（先创建的）
+2. 跳过被阻塞的任务（blockedBy 非空）
+3. 跳过已分配给其他 Agent 的任务
+4. 选择状态为 `pending` 的任务

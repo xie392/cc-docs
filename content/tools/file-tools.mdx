@@ -1,0 +1,211 @@
+# 文件操作工具
+
+## 概述
+
+文件操作工具是 Claude Code 最基础也最常用的工具集，支持读取、编辑、创建文件以及 Notebook 编辑。
+
+## FileReadTool
+
+读取文件内容，是最基本的文件操作工具。
+
+### 目录结构
+
+```
+tools/FileReadTool/
+├── FileReadTool.ts        # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  file_path: z.string().describe('文件绝对路径'),
+  offset: z.number().optional().describe('起始行号'),
+  limit: z.number().optional().describe('读取行数'),
+})
+```
+
+### 行为特性
+
+- 支持分页读取（offset + limit），避免大文件占用过多上下文
+- 自动检测文件编码
+- 对二进制文件返回提示而非乱码
+- 读取结果带行号，方便后续编辑定位
+- 只读工具，无需权限确认
+
+### 输出格式
+
+```
+     1→import { z } from 'zod'
+     2→import type { Tool } from './Tool'
+     3→
+     4→export class FileReadTool implements Tool {
+     5→  name = 'Read'
+     6→  // ...
+     7→}
+```
+
+## FileEditTool
+
+精确字符串替换编辑，是修改文件的核心工具。
+
+### 目录结构
+
+```
+tools/FileEditTool/
+├── FileEditTool.ts        # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  file_path: z.string().describe('文件路径'),
+  old_string: z.string().describe('要替换的原始字符串'),
+  new_string: z.string().describe('替换后的字符串'),
+  replace_all: z.boolean().optional().default(false)
+    .describe('是否替换所有匹配项'),
+})
+```
+
+### 核心设计
+
+FileEditTool 使用精确字符串匹配而非行号，这有几个重要优势：
+
+1. **确定性**：不受文件修改影响，行号可能因其他编辑而偏移
+2. **可审计**：用户和 AI 都能清楚看到改动了什么
+3. **原子性**：匹配不唯一时拒绝执行，避免错误修改
+
+### 替换逻辑
+
+```typescript
+async execute(input: EditInput, context: ToolUseContext) {
+  const content = await readFile(input.file_path)
+  
+  // 检查匹配次数
+  const matchCount = countOccurrences(content, input.old_string)
+  
+  if (matchCount === 0) {
+    return { error: '未找到匹配的字符串' }
+  }
+  
+  if (matchCount > 1 && !input.replace_all) {
+    return { error: `找到 ${matchCount} 处匹配，需要唯一匹配或设置 replace_all` }
+  }
+  
+  // 执行替换
+  const newContent = input.replace_all
+    ? content.replaceAll(input.old_string, input.new_string)
+    : content.replace(input.old_string, input.new_string)
+  
+  await writeFile(input.file_path, newContent)
+}
+```
+
+### replace_all 模式
+
+当 `replace_all: true` 时，替换文件中所有匹配的字符串，常用于：
+- 重命名变量
+- 修改 import 语句
+- 批量替换配置值
+
+## FileWriteTool
+
+创建新文件或完全覆写文件内容。
+
+### 目录结构
+
+```
+tools/FileWriteTool/
+├── FileWriteTool.ts       # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  file_path: z.string().describe('文件路径'),
+  content: z.string().describe('文件完整内容'),
+})
+```
+
+### 行为特性
+
+- 写入前会检查目标文件是否存在
+- 如果文件已存在，属于覆写操作（需要更高权限）
+- 自动创建不存在的父目录
+- 适合创建全新文件，不适合修改已有文件（应用 FileEditTool）
+
+### 写入策略
+
+```
+文件不存在 → 创建新文件（标准权限）
+文件已存在 → 覆写整个文件（需确认）
+目录不存在 → 自动递归创建
+```
+
+## NotebookEditTool
+
+Jupyter Notebook (.ipynb) 编辑工具，支持代码单元格和 Markdown 单元格操作。
+
+### 目录结构
+
+```
+tools/NotebookEdit/
+├── NotebookEditTool.ts    # 工具主类
+└── test/                  # 测试
+```
+
+### 输入 Schema
+
+```typescript
+const inputSchema = z.object({
+  notebook_path: z.string().describe('Notebook 绝对路径'),
+  cell_id: z.string().optional().describe('单元格 ID'),
+  new_source: z.string().describe('单元格新内容'),
+  cell_type: z.enum(['code', 'markdown']).optional(),
+  edit_mode: z.enum(['replace', 'insert', 'delete']).optional(),
+})
+```
+
+### 支持的操作
+
+| edit_mode | 说明 |
+|-----------|------|
+| `replace` | 替换单元格内容（默认） |
+| `insert` | 在指定单元格后插入新单元格 |
+| `delete` | 删除指定单元格 |
+
+### 单元格 ID
+
+Notebook 单元格通过 `cell_id` 标识，这是 Jupyter 的标准机制。如果省略 `cell_id`，新单元格插入到 Notebook 开头。
+
+## 权限模型
+
+### 只读 vs 写操作
+
+| 工具 | 类型 | 需要确认 |
+|------|------|----------|
+| FileReadTool | 只读 | 否 |
+| FileEditTool | 写操作 | 是（除非 auto-accept 模式） |
+| FileWriteTool | 写操作 | 是 |
+| NotebookEditTool | 写操作 | 是 |
+
+### 权限模式
+
+```typescript
+type PermissionMode = 
+  | 'default'       // 每次写操作需确认
+  | 'auto-accept'   // 自动接受所有操作
+  | 'plan'          // 规划模式，不执行写操作
+```
+
+## 最佳实践
+
+1. **优先使用 FileEditTool**：修改已有文件时，使用精确替换而非全文覆写
+2. **分批读取**：大文件使用 offset + limit 分批读取
+3. **先读后写**：修改文件前先读取确认当前内容
+4. **唯一匹配**：编辑时提供足够的上下文确保匹配唯一

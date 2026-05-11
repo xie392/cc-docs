@@ -1,0 +1,9 @@
+{
+  "overview": "工具系统总览",
+  "file-tools": "文件操作工具",
+  "search-tools": "搜索工具",
+  "exec-tools": "执行工具",
+  "agent-tools": "Agent 协作工具",
+  "task-tools": "任务管理工具",
+  "mcp-tools": "MCP 工具"
+}

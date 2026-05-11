@@ -1,0 +1,361 @@
+# 自定义工具开发
+
+## 概述
+
+Claude Code 支持两种方式扩展工具：直接实现 Tool 接口（内置工具）和通过 MCP 协议创建工具服务器（推荐方式）。
+
+## Tool 接口
+
+所有工具都实现 `Tool` 接口：
+
+```typescript
+// src/Tool.ts
+export interface Tool<TInput = unknown, TOutput = unknown> {
+  name: string                    // 工具唯一标识
+  description: string             // 给 AI 的工具描述
+  
+  inputSchema: z.ZodType<TInput>  // Zod v4 输入验证
+  
+  execute(
+    input: TInput,
+    context: ToolUseContext
+  ): Promise<ToolResult>
+  
+  // 可选
+  isReadOnly?: boolean            // 是否只读工具
+  requiresPermission?: boolean    // 是否需要权限确认
+  aliases?: string[]              // 工具别名
+  
+  // UI 渲染（可选）
+  renderToolUse?(input: TInput): ReactNode
+  renderToolResult?(result: ToolResult): ReactNode
+}
+```
+
+## 实现内置工具
+
+### 完整示例
+
+```typescript
+import { z } from 'zod/v4'
+import type { Tool, ToolResult, ToolUseContext } from './Tool.js'
+
+// 1. 定义输入类型
+const myToolInputSchema = z.object({
+  query: z.string().describe('搜索查询'),
+  limit: z.number().optional().default(10).describe('结果数量'),
+})
+
+type MyToolInput = z.infer<typeof myToolInputSchema>
+
+// 2. 实现工具类
+class MyCustomTool implements Tool<MyToolInput, ToolResult> {
+  name = 'MyCustomTool'
+  description = 'A custom tool that searches for something useful'
+  
+  inputSchema = myToolInputSchema
+  
+  isReadOnly = true  // 只读工具不需要权限确认
+  
+  async execute(
+    input: MyToolInput,
+    context: ToolUseContext
+  ): Promise<ToolResult> {
+    try {
+      const result = await searchSomething(input.query, input.limit)
+      
+      return {
+        type: 'tool_result',
+        tool_use_id: context.toolUseId,
+        content: JSON.stringify(result, null, 2),
+      }
+    } catch (error) {
+      return {
+        type: 'tool_result',
+        tool_use_id: context.toolUseId,
+        content: `Error: ${error.message}`,
+        is_error: true,
+      }
+    }
+  }
+  
+  // 可选：自定义渲染
+  renderToolUse(input: MyToolInput) {
+    return `Searching for: ${input.query}`
+  }
+}
+```
+
+### 注册工具
+
+```typescript
+// src/tools.ts
+export function getTools(context: ToolRegistrationContext): Tools {
+  return [
+    new BashTool(context),
+    new FileReadTool(context),
+    // ... 其他内置工具
+    new MyCustomTool(context),  // 添加自定义工具
+  ]
+}
+```
+
+## MCP 工具服务器
+
+创建 MCP 工具服务器是扩展 Claude Code 的推荐方式。
+
+### 基本结构
+
+```typescript
+// mcp-server.ts
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+
+const server = new Server({
+  name: 'my-tools',
+  version: '1.0.0',
+})
+
+// 注册工具列表
+server.setRequestHandler('tools/list', async () => ({
+  tools: [
+    {
+      name: 'database_query',
+      description: 'Query the database with SQL',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string', description: 'SQL query' },
+          limit: { type: 'number', description: 'Max rows' },
+        },
+        required: ['sql'],
+      },
+    },
+  ],
+}))
+
+// 处理工具调用
+server.setRequestHandler('tools/call', async (request) => {
+  if (request.params.name === 'database_query') {
+    const { sql, limit } = request.params.arguments
+    const result = await executeSQL(sql, limit)
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    }
+  }
+  throw new Error(`Unknown tool: ${request.params.name}`)
+})
+
+// 启动
+const transport = new StdioServerTransport()
+await server.connect(transport)
+```
+
+### 配置 MCP 服务器
+
+```json
+// .claude/mcp-configs/my-tools.json
+{
+  "mcpServers": {
+    "my-tools": {
+      "command": "node",
+      "args": ["./mcp-server.ts"],
+      "env": {
+        "DB_URL": "sqlite:///data.db"
+      }
+    }
+  }
+}
+```
+
+## 工具设计原则
+
+### 单一职责
+
+每个工具只做一件事：
+
+```typescript
+// 好的设计
+class FileReadTool { /* 只读文件 */ }
+class FileEditTool { /* 只编辑文件 */ }
+class FileWriteTool { /* 只写文件 */ }
+
+// 不好的设计
+class FileTool {
+  // 读、写、编辑、删除全在一个工具
+}
+```
+
+### 幂等性
+
+相同输入产生相同结果：
+
+```typescript
+// 幂等：多次调用结果相同
+class GlobTool {
+  async execute(input: { pattern: string }) {
+    return glob(input.pattern)  // 文件系统状态相同时结果相同
+  }
+}
+
+// 非幂等：需要额外注意
+class BashTool {
+  async execute(input: { command: string }) {
+    // "npm install" 可能产生不同结果
+  }
+}
+```
+
+### 可取消
+
+支持 AbortController：
+
+```typescript
+async execute(input: MyInput, context: ToolUseContext) {
+  const signal = context.abortController.signal
+  
+  const result = await longRunningOperation(input, { signal })
+  return result
+}
+```
+
+### 有界输出
+
+限制输出大小，避免消耗过多上下文：
+
+```typescript
+async execute(input: MyInput, context: ToolUseContext) {
+  const result = await fetchData(input)
+  
+  // 截断过长输出
+  const output = JSON.stringify(result)
+  if (output.length > MAX_OUTPUT_LENGTH) {
+    return {
+      content: output.substring(0, MAX_OUTPUT_LENGTH) + '\n... (truncated)',
+    }
+  }
+  
+  return { content: output }
+}
+```
+
+## 输入验证
+
+### Zod Schema
+
+使用 Zod v4 定义和验证输入：
+
+```typescript
+const inputSchema = z.object({
+  file_path: z.string().min(1, '文件路径不能为空'),
+  content: z.string(),
+  encoding: z.enum(['utf-8', 'ascii', 'base64']).optional().default('utf-8'),
+  overwrite: z.boolean().optional().default(false),
+})
+```
+
+### 验证错误处理
+
+```typescript
+async execute(input: unknown, context: ToolUseContext) {
+  const parsed = this.inputSchema.safeParse(input)
+  
+  if (!parsed.success) {
+    return {
+      type: 'tool_result',
+      tool_use_id: context.toolUseId,
+      content: `输入验证失败: ${parsed.error.message}`,
+      is_error: true,
+    }
+  }
+  
+  // 使用验证后的输入
+  return this.doExecute(parsed.data, context)
+}
+```
+
+## 权限设计
+
+### 只读 vs 写操作
+
+```typescript
+class FileReadTool {
+  isReadOnly = true  // 无需权限确认
+}
+
+class FileEditTool {
+  isReadOnly = false  // 需要权限确认
+  requiresPermission = true
+}
+```
+
+### 权限检查
+
+```typescript
+async execute(input: MyInput, context: ToolUseContext) {
+  // 1. 权限检查
+  if (!this.isReadOnly) {
+    const permission = await context.canUseTool(this.name, input)
+    if (permission === 'deny') {
+      return { error: 'Operation denied by user' }
+    }
+  }
+  
+  // 2. 执行
+  return this.doExecute(input, context)
+}
+```
+
+## 错误处理
+
+```typescript
+async execute(input: MyInput, context: ToolUseContext) {
+  try {
+    const result = await riskyOperation(input)
+    return {
+      type: 'tool_result',
+      tool_use_id: context.toolUseId,
+      content: JSON.stringify(result),
+    }
+  } catch (error) {
+    // 返回错误信息给 AI，让它决定如何处理
+    return {
+      type: 'tool_result',
+      tool_use_id: context.toolUseId,
+      content: `Error: ${error.message}`,
+      is_error: true,
+    }
+  }
+}
+```
+
+## 测试
+
+### 工具测试示例
+
+```typescript
+// tools/MyCustomTool/test/MyCustomTool.test.ts
+import { describe, test, expect } from 'bun:test'
+import { MyCustomTool } from '../MyCustomTool'
+
+describe('MyCustomTool', () => {
+  const tool = new MyCustomTool(mockContext)
+  
+  test('should return results for valid input', async () => {
+    const result = await tool.execute(
+      { query: 'test', limit: 10 },
+      mockToolUseContext
+    )
+    expect(result.is_error).toBeFalsy()
+    expect(result.content).toBeDefined()
+  })
+  
+  test('should reject invalid input', async () => {
+    const result = await tool.execute(
+      { query: '', limit: -1 },
+      mockToolUseContext
+    )
+    expect(result.is_error).toBeTruthy()
+  })
+})
+```

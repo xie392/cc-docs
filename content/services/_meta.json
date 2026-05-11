@@ -1,0 +1,7 @@
+{
+  "overview": "服务层总览",
+  "api-service": "API 服务",
+  "mcp-service": "MCP 服务",
+  "compact-service": "上下文压缩",
+  "session-memory": "会话记忆"
+}
