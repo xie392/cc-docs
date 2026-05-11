@@ -3,3 +3,45 @@
 .nextra-card > div:first-child {
   padding: 0 1rem;
 }
+
+/* Code block enhancements */
+pre {
+  border-radius: 0.5rem;
+}
+pre > code {
+  display: grid;
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+[data-rehype-pretty-code-figure] code [data-line] {
+  padding: 0 1rem;
+  border-left: 3px solid transparent;
+}
+[data-rehype-pretty-code-figure] code [data-highlighted-line] {
+  border-left-color: #5b9cf5;
+  background: rgba(59, 130, 246, 0.1);
+}
+[data-rehype-pretty-code-title] {
+  padding: 0.5rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+  border-radius: 0.5rem 0.5rem 0 0;
+}
+[data-rehype-pretty-code-title] + pre {
+  border-radius: 0 0 0.5rem 0.5rem;
+  margin-top: 0;
+}
+code [data-line-numbers] [data-line]::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 1.5rem;
+  margin-right: 1rem;
+  text-align: right;
+  color: rgba(128, 128, 128, 0.4);
+  font-size: 0.75rem;
+}
+code [data-line-numbers] {
+  counter-reset: line;
+}

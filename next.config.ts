@@ -6,6 +6,15 @@ const withNextra = nextra({
   search: {
     codeblocks: false,
   },
+  mdxOptions: {
+    rehypePrettyCodeOptions: {
+      theme: {
+        dark: "dracula",
+        light: "github-light",
+      },
+      defaultLang: "plaintext",
+    },
+  },
 });
 
 const nextConfig: NextConfig = withNextra({
