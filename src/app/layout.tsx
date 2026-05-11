@@ -23,7 +23,7 @@ export default async function RootLayout({
           <span style={{ opacity: "60%" }}>Claude Code 源码学习</span>
         </span>
       }
-      projectLink="https://github.com/anthropics/claude-code"
+      projectLink="https://github.com/xie392/cc-docs"
     />
   );
   const pageMap = await getPageMap();
@@ -36,7 +36,7 @@ export default async function RootLayout({
           navbar={navbar}
           footer={<Footer>MIT {new Date().getFullYear()} © CC Docs</Footer>}
           editLink="在 GitHub 上编辑此页"
-          docsRepositoryBase="https://github.com/anthropics/claude-code"
+          docsRepositoryBase="https://github.com/xie392/cc-docs"
           sidebar={{ defaultMenuCollapseLevel: 2 }}
           pageMap={pageMap}
         >
